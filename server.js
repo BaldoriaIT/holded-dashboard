@@ -11,6 +11,9 @@ app.use(express.json());
 
 // ─── Servir el dashboard HTML estático ───────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // ─── Mapeo: nombre en Holded → metadatos del dashboard ───────────────
 // Las API keys se leen de variables de entorno (configuradas en Render)
