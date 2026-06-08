@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tesorería — Beata Pasta Group</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Old+Standard+TT:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --cream:  #F5F0E8;
+  --cream2: #EDE7D9;
+  --cream3: #E2D9C8;
+  --ink:    #1A1814;
+  --ink2:   #3D3830;
+  --ink3:   #6B6358;
+  --ink4:   #9A9185;
+  --rust:   #C4613A;
+  --gold:   #B8962E;
+  --border: rgba(26,24,20,0.10);
+  --border2:rgba(26,24,20,0.18);
+  --shadow: 0 2px 16px rgba(26,24,20,0.07);
+  --shadow2:0 4px 28px rgba(26,24,20,0.13);
+  --font-display: 'Cormorant Garamond', Georgia, serif;
+  --font-body:    'DM Sans', sans-serif;
+  --font-numbers: 'Old Standard TT', Georgia, serif;
+  --font-mono:    'DM Mono', monospace;
+  --radius: 14px;
+  --radius-sm: 8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font-body); background: var(--cream); color: var(--ink); min-height: 100vh; font-size: 13.5px; }
+
+/* ─── NUMBERS always in Old Standard TT ─── */
+.num { font-family: var(--font-numbers); font-variant-numeric: tabular-nums; }
+
+/* ─── NOISE ─── */
+body::before { content:''; position:fixed; inset:0; background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E"); pointer-events:none; z-index:0; opacity:.5; }
+
+/* ─── SHELL ─── */
+.shell { display:grid; grid-template-columns:260px 1fr; min-height:100vh; position:relative; z-index:1; }
+
+/* ─── SIDEBAR ─── */
+.sidebar { background:var(--ink); color:var(--cream); position:sticky; top:0; height:100vh; display:flex; flex-direction:column; overflow-y:auto; }
+.sb-brand { padding:32px 28px 24px; border-bottom:1px solid rgba(255,255,255,0.08); }
+.sb-brand-title { font-family:var(--font-display); font-size:28px; font-weight:400; letter-spacing:.5px; color:var(--cream); line-height:1.1; }
+.sb-brand-sub { font-size:11px; color:rgba(245,240,232,0.4); letter-spacing:2px; text-transform:uppercase; margin-top:6px; }
+.sb-brand-line { width:32px; height:1px; background:var(--rust); margin-top:14px; }
+.sb-section { padding:22px 28px 8px; font-size:10px; letter-spacing:1.8px; color:rgba(245,240,232,0.3); text-transform:uppercase; }
+.sb-nav { flex:1; padding:0 14px; }
+.sb-item { display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:var(--radius-sm); cursor:pointer; font-size:13px; color:rgba(245,240,232,0.55); transition:all .15s; border:none; background:none; width:100%; text-align:left; }
+.sb-item:hover { background:rgba(255,255,255,0.06); color:var(--cream); }
+.sb-item.active { background:rgba(196,97,58,0.18); color:#F5A07A; }
+.sb-divider { height:1px; background:rgba(255,255,255,0.07); margin:12px 28px; }
+.sb-filters { padding:0 14px 12px; }
+.sb-filter-btn { display:flex; align-items:center; gap:9px; padding:8px 14px; border-radius:var(--radius-sm); cursor:pointer; font-size:12.5px; color:rgba(245,240,232,0.5); transition:all .15s; border:none; background:none; width:100%; text-align:left; }
+.sb-filter-btn:hover { background:rgba(255,255,255,0.06); color:var(--cream); }
+.sb-filter-btn.active { background:rgba(255,255,255,0.1); color:var(--cream); }
+.sb-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+.sb-footer { padding:18px 28px; border-top:1px solid rgba(255,255,255,0.07); }
+.sb-ts { font-family:var(--font-mono); font-size:10px; color:rgba(245,240,232,0.25); margin-top:4px; }
+.sb-status { font-size:11px; display:flex; align-items:center; gap:6px; }
+.sb-status-dot { width:7px; height:7px; border-radius:50%; }
+.sb-status-dot.live { background:#2ECC8A; box-shadow:0 0 6px #2ECC8A; }
+.sb-status-dot.error { background:#FF5A5A; }
+.sb-status-dot.loading { background:var(--gold); animation:pulse .8s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* ─── MAIN ─── */
+.main { padding:40px 44px; background:var(--cream); }
+
+/* ─── TOPBAR ─── */
+.topbar { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:36px; gap:20px; }
+.topbar-eyebrow { font-size:10px; letter-spacing:2.5px; text-transform:uppercase; color:var(--ink4); margin-bottom:6px; }
+.topbar-title { font-family:var(--font-display); font-size:40px; font-weight:400; color:var(--ink); letter-spacing:-.5px; line-height:1; }
+.topbar-title em { font-style:italic; color:var(--rust); }
+.topbar-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.btn { display:flex; align-items:center; gap:7px; padding:10px 18px; border-radius:var(--radius-sm); font-size:12px; font-family:var(--font-body); cursor:pointer; transition:all .15s; letter-spacing:.3px; white-space:nowrap; }
+.btn-outline { border:1.5px solid var(--border2); background:transparent; color:var(--ink2); }
+.btn-outline:hover { background:var(--ink); color:var(--cream); border-color:var(--ink); }
+.btn-solid { border:none; background:var(--ink); color:var(--cream); }
+.btn-solid:hover { background:var(--rust); }
+.btn-rust { border:none; background:var(--rust); color:white; }
+.btn-rust:hover { background:#a8502e; }
+
+/* ─── SYNC BANNER ─── */
+.sync-banner { background:white; border:1px solid var(--border); border-radius:var(--radius); padding:16px 20px; margin-bottom:24px; display:flex; align-items:center; gap:14px; box-shadow:var(--shadow); }
+.sync-banner-icon { font-size:20px; flex-shrink:0; }
+.sync-banner-text { flex:1; font-size:12px; color:var(--ink3); }
+.sync-banner-text strong { color:var(--ink); }
+.sync-banner.success { border-color:rgba(46,204,138,0.3); background:rgba(46,204,138,0.05); }
+.sync-banner.error { border-color:rgba(196,97,58,0.3); background:rgba(196,97,58,0.05); }
+.sync-banner.loading { border-color:rgba(184,150,46,0.3); background:rgba(184,150,46,0.05); }
+
+/* ─── KPI GRID ─── */
+.kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:32px; }
+.kpi { background:white; border:1px solid var(--border); border-radius:var(--radius); padding:20px 22px; box-shadow:var(--shadow); transition:box-shadow .2s; }
+.kpi:hover { box-shadow:var(--shadow2); }
+.kpi.accent { background:var(--ink); }
+.kpi.accent .kpi-label { color:rgba(245,240,232,0.4); }
+.kpi.accent .kpi-sub { color:rgba(245,240,232,0.3); }
+.kpi-label { font-size:10px; letter-spacing:1.5px; color:var(--ink4); text-transform:uppercase; margin-bottom:10px; }
+.kpi-value { font-family:var(--font-numbers); font-size:26px; font-weight:400; color:var(--ink); letter-spacing:-.3px; line-height:1; }
+.kpi.accent .kpi-value { color:#F5F0E8; }
+.kpi-value.pos { color:#2A7A56; }
+.kpi-sub { font-size:11px; color:var(--ink4); margin-top:6px; }
+
+/* ─── TABS ─── */
+.tabs { display:flex; border-bottom:1.5px solid var(--border2); margin-bottom:24px; }
+.tab-btn { padding:10px 20px; font-size:12.5px; color:var(--ink4); cursor:pointer; border:none; background:none; font-family:var(--font-body); letter-spacing:.3px; border-bottom:2px solid transparent; margin-bottom:-1.5px; transition:all .15s; }
+.tab-btn:hover { color:var(--ink); }
+.tab-btn.active { color:var(--rust); border-bottom-color:var(--rust); font-weight:500; }
+.tab-panel { display:none; }
+.tab-panel.active { display:block; }
+
+/* ─── SECTION HD ─── */
+.section-hd { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:16px; }
+.section-title { font-family:var(--font-display); font-size:22px; font-weight:400; color:var(--ink); }
+.section-meta { font-size:11px; color:var(--ink4); }
+
+/* ─── CARDS GRID ─── */
+.cards-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(350px,1fr)); gap:14px; margin-bottom:32px; }
+.entity-card { background:white; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow); transition:box-shadow .2s,transform .15s; }
+.entity-card:hover { box-shadow:var(--shadow2); transform:translateY(-2px); }
+.entity-header { padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; position:relative; }
+.entity-accent-bar { position:absolute; left:0; top:0; bottom:0; width:4px; }
+.entity-name-wrap { padding-left:6px; }
+.entity-name { font-family:var(--font-display); font-size:17px; font-weight:400; color:var(--ink); letter-spacing:-.2px; }
+.entity-rest-tag { display:inline-flex; align-items:center; font-size:10px; letter-spacing:.8px; text-transform:uppercase; padding:3px 8px; border-radius:20px; margin-top:4px; font-weight:500; }
+.entity-total-amount { font-family:var(--font-numbers); font-size:22px; font-weight:400; color:var(--ink); text-align:right; }
+.entity-total-amount.loading-amt { font-size:16px; color:var(--ink4); font-family:var(--font-body); }
+.entity-total-label { font-size:10px; color:var(--ink4); margin-top:2px; text-align:right; }
+
+/* ─── BANK ROWS ─── */
+.bank-rows { padding:4px 0 8px; }
+.bank-row { display:flex; align-items:center; gap:12px; padding:9px 20px; transition:background .12s; }
+.bank-row:hover { background:var(--cream); }
+.bank-logo-box { width:32px; height:32px; border-radius:7px; display:flex; align-items:center; justify-content:center; overflow:hidden; background:white; border:1px solid var(--border2); flex-shrink:0; padding:3px; }
+.bank-logo-box img { width:100%; height:100%; object-fit:contain; }
+.bank-logo-text { width:32px; height:32px; border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; flex-shrink:0; border:1px solid var(--border2); letter-spacing:.5px; }
+.bank-info { flex:1; min-width:0; }
+.bank-name { font-size:12px; font-weight:500; color:var(--ink); }
+.bank-iban { font-family:var(--font-mono); font-size:10px; color:var(--ink4); margin-top:1px; }
+.bank-holded-name { font-size:10px; color:var(--ink4); margin-top:1px; font-style:italic; }
+.bank-amount { font-family:var(--font-numbers); font-size:15px; font-weight:400; color:var(--ink); white-space:nowrap; }
+.bank-amount.zero { color:var(--ink4); }
+.bank-amount.syncing { color:var(--gold); font-size:12px; font-family:var(--font-body); }
+.bank-amount.sync-error { color:var(--rust); font-size:11px; font-family:var(--font-body); }
+.bank-row-divider { height:1px; background:var(--border); margin:0 20px; }
+
+/* ─── BANCO VIEW ─── */
+.banco-section { margin-bottom:28px; animation:fadeUp .3s ease both; }
+.banco-header { display:flex; align-items:center; gap:14px; margin-bottom:14px; }
+.banco-logo-big { width:48px; height:48px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:white; border:1px solid var(--border2); overflow:hidden; padding:5px; flex-shrink:0; }
+.banco-logo-big img { width:100%; height:100%; object-fit:contain; }
+.banco-logo-text { width:48px; height:48px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; border:1px solid var(--border2); flex-shrink:0; }
+.banco-name-main { font-family:var(--font-display); font-size:24px; font-weight:400; color:var(--ink); }
+.banco-total-amt { font-family:var(--font-numbers); font-size:20px; color:var(--ink2); margin-left:auto; }
+.banco-table { width:100%; background:white; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow); }
+.bt-head { display:grid; grid-template-columns:1.2fr 1fr 1.4fr auto; padding:10px 20px; background:var(--cream2); font-size:10px; letter-spacing:1.2px; text-transform:uppercase; color:var(--ink4); border-bottom:1px solid var(--border); }
+.bt-row { display:grid; grid-template-columns:1.2fr 1fr 1.4fr auto; padding:11px 20px; align-items:center; border-bottom:1px solid var(--border); transition:background .1s; }
+.bt-row:last-child { border-bottom:none; }
+.bt-row:hover { background:var(--cream); }
+.bt-saldo { font-family:var(--font-numbers); font-size:15px; color:var(--ink); text-align:right; }
+.bt-saldo.zero { color:var(--ink4); }
+.bt-saldo.syncing { color:var(--gold); font-size:12px; font-family:var(--font-body); }
+.bt-tag { width:10px; height:10px; border-radius:50%; flex-shrink:0; margin-right:8px; display:inline-block; }
+
+/* ─── ANALYSIS ─── */
+.analysis-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.analysis-card { background:white; border:1px solid var(--border); border-radius:var(--radius); padding:22px 24px; box-shadow:var(--shadow); }
+.analysis-title { font-family:var(--font-display); font-size:18px; margin-bottom:18px; color:var(--ink); }
+.bar-row { display:flex; align-items:center; gap:10px; margin-bottom:9px; }
+.bar-label { font-size:11px; color:var(--ink2); width:120px; flex-shrink:0; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bar-track { flex:1; height:7px; background:var(--cream3); border-radius:4px; overflow:hidden; }
+.bar-fill { height:100%; border-radius:4px; transition:width .5s ease; }
+.bar-val { font-family:var(--font-numbers); font-size:11px; color:var(--ink); width:90px; flex-shrink:0; text-align:right; }
+
+/* ─── SUGGESTIONS ─── */
+.suggestions { background:linear-gradient(135deg,var(--ink) 0%,#2A2620 100%); border-radius:var(--radius); padding:24px 28px; margin-top:14px; color:var(--cream); }
+.sug-title { font-family:var(--font-display); font-size:20px; margin-bottom:16px; color:var(--cream); }
+.sug-item { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.07); }
+.sug-item:last-child { border-bottom:none; }
+.sug-icon { font-size:18px; flex-shrink:0; margin-top:1px; }
+.sug-text { font-size:12.5px; color:rgba(245,240,232,0.75); line-height:1.6; }
+.sug-text strong { color:var(--cream); }
+
+/* ─── ANIM ─── */
+@keyframes fadeUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+@keyframes spin { to { transform:rotate(360deg); } }
+.spinning { animation:spin .7s linear; }
+.entity-card,.kpi,.banco-section { animation:fadeUp .3s ease both; }
+
+/* ─── RESPONSIVE ─── */
+@media (max-width:1100px) { .kpi-grid{grid-template-columns:repeat(2,1fr)} .analysis-grid{grid-template-columns:1fr} }
+@media (max-width:900px) { .shell{grid-template-columns:1fr} .sidebar{display:none} .main{padding:20px} .kpi-grid{grid-template-columns:repeat(2,1fr)} .cards-grid{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- ─── SIDEBAR ─── -->
+<aside class="sidebar">
+  <div class="sb-brand">
+    <div class="sb-brand-title">Beata Pasta<br><em style="font-style:italic;color:#F5A07A">Group</em></div>
+    <div class="sb-brand-sub">Tesorería · 2026</div>
+    <div class="sb-brand-line"></div>
+  </div>
+  <nav class="sb-nav" style="padding-top:16px">
+    <div class="sb-section">Vistas</div>
+    <button class="sb-item active" onclick="switchTab('sociedad')"><span>🏢</span> Por Sociedad</button>
+    <button class="sb-item" onclick="switchTab('banco')"><span>🏦</span> Por Banco</button>
+    <button class="sb-item" onclick="switchTab('restaurante')"><span>🍝</span> Por Restaurante</button>
+    <button class="sb-item" onclick="switchTab('analisis')"><span>📊</span> Análisis</button>
+    <div class="sb-divider"></div>
+    <div class="sb-section">Filtrar</div>
+    <div class="sb-filters" id="sb-filters"></div>
+  </nav>
+  <div class="sb-footer">
+    <div class="sb-status">
+      <div class="sb-status-dot loading" id="status-dot"></div>
+      <span id="status-text" style="color:rgba(245,240,232,0.5)">Conectando...</span>
+    </div>
+    <div class="sb-ts" id="sb-ts">—</div>
+  </div>
+</aside>
+
+<!-- ─── MAIN ─── -->
+<main class="main">
+  <div class="topbar">
+    <div>
+      <div class="topbar-eyebrow">Dashboard · Tesorería</div>
+      <div class="topbar-title">Posición <em>bancaria</em></div>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn btn-outline" onclick="loadData()">
+        <svg id="ri" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        Actualizar
+      </button>
+      <button class="btn btn-solid" onclick="toggleAutoRefresh()" id="auto-btn">⏱ Auto OFF</button>
+    </div>
+  </div>
+
+  <div class="sync-banner loading" id="sync-banner">
+    <div class="sync-banner-icon">🔄</div>
+    <div class="sync-banner-text"><strong>Cargando datos desde Holded...</strong> Conectando con las sociedades.</div>
+  </div>
+
+  <div class="kpi-grid" id="kpi-grid"></div>
+
+  <div class="tabs">
+    <button class="tab-btn active" id="tab-sociedad" onclick="switchTab('sociedad')">Por Sociedad</button>
+    <button class="tab-btn" id="tab-banco" onclick="switchTab('banco')">Por Banco</button>
+    <button class="tab-btn" id="tab-restaurante" onclick="switchTab('restaurante')">Por Restaurante</button>
+    <button class="tab-btn" id="tab-analisis" onclick="switchTab('analisis')">Análisis</button>
+  </div>
+
+  <div class="tab-panel active" id="panel-sociedad">
+    <div class="section-hd"><div class="section-title">Por Sociedad</div><div class="section-meta" id="meta-sociedad"></div></div>
+    <div class="cards-grid" id="grid-sociedad"></div>
+  </div>
+  <div class="tab-panel" id="panel-banco">
+    <div class="section-hd"><div class="section-title">Por Banco</div><div class="section-meta" id="meta-banco"></div></div>
+    <div id="grid-banco"></div>
+  </div>
+  <div class="tab-panel" id="panel-restaurante">
+    <div class="section-hd"><div class="section-title">Por Restaurante</div><div class="section-meta" id="meta-rest"></div></div>
+    <div class="cards-grid" id="grid-restaurante"></div>
+  </div>
+  <div class="tab-panel" id="panel-analisis">
+    <div class="section-hd"><div class="section-title">Análisis comparativo</div></div>
+    <div class="analysis-grid">
+      <div class="analysis-card"><div class="analysis-title">Por Sociedad</div><div id="chart-sociedad"></div></div>
+      <div class="analysis-card"><div class="analysis-title">Por Banco</div><div id="chart-banco"></div></div>
+      <div class="analysis-card"><div class="analysis-title">Por Restaurante</div><div id="chart-rest"></div></div>
+      <div class="analysis-card"><div class="analysis-title">Concentración bancaria</div><div id="chart-pie"></div></div>
+    </div>
+    <div class="suggestions" id="suggestions-block"></div>
+  </div>
+
+</main>
+</div>
+
+<script>
+// ─── CONFIG ─────────────────────────────────────────────────────────
+// En producción (Render), esto apunta a tu propio servidor.
+// En local (abrir el HTML directamente), usa datos de muestra.
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? 'http://localhost:3000'
+  : '';   // En Render, la API y el HTML están en el mismo servidor
+
+// ─── ESTADO ─────────────────────────────────────────────────────────
+let DATA = [];
+let currentFilter = 'all';
+let currentTab    = 'sociedad';
+let autoInterval  = null;
+let autoEnabled   = false;
+
+const SOCIETY_COLORS = {
+  "BALDORIA GROUP":     "#84ceff",
+  "BEATA BALDORIA":     "#e7ddb1",
+  "BEATA PASTA GROUP":  "#FFBE5C",
+  "BEATA PASTA GV":     "#333366",
+  "BEATA PASTA SMART":  "#FEDEA9",
+  "BEATA PASTA FELIPE": "#df6c49",
+  "BEATA PASTA CALEIDO":"#d36c6e",
+  "BEATA PASTA SUR":    "#fdd495",
+};
+
+const BANK_LOGOS = {
+  "SANTANDER": { img:"https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/Banco_Santander_Logotipo.svg/320px-Banco_Santander_Logotipo.svg.png", color:"#EC0000" },
+  "SABADELL":  { img:"https://upload.wikimedia.org/wikipedia/commons/thumb/0/04/Banco_Sabadell_logo.svg/320px-Banco_Sabadell_logo.svg.png",          color:"#005C8A" },
+  "ABANCA":    { img:"https://upload.wikimedia.org/wikipedia/commons/thumb/1/11/ABANCA_logo.svg/320px-ABANCA_logo.svg.png",                           color:"#00A3A3" },
+  "BBVA":      { img:"https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/BBVA_2019.svg/320px-BBVA_2019.svg.png",                               color:"#004481" },
+  "BANKINTER": { img:"https://upload.wikimedia.org/wikipedia/commons/thumb/9/98/Bankinter_logo.svg/320px-Bankinter_logo.svg.png",                     color:"#FF6600" },
+  "CAIXA":     { img:"https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/CaixaBank_logo.svg/320px-CaixaBank_logo.svg.png",                     color:"#007BC4" },
+};
+
+// ─── UTILS ──────────────────────────────────────────────────────────
+function fmt(n) {
+  if (n === null || n === undefined) return '—';
+  return n.toLocaleString('es-ES', {style:'currency', currency:'EUR', minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function ibanShort(iban) {
+  if (!iban) return '';
+  const c = iban.replace(/\s/g,'');
+  return c.substring(0,4)+'....'+c.slice(-4);
+}
+function needsDark(hex) {
+  hex = hex.replace('#','');
+  const r=parseInt(hex.substr(0,2),16), g=parseInt(hex.substr(2,2),16), b=parseInt(hex.substr(4,2),16);
+  return (r*299+g*587+b*114)/1000 > 140;
+}
+function bankLogoHtml(banco, size='sm') {
+  const meta = BANK_LOGOS[banco];
+  const dim = size==='sm' ? 32 : 48;
+  const cls = size==='sm' ? 'bank-logo-box' : 'banco-logo-big';
+  if (meta) {
+    return `<div class="${cls}" style="width:${dim}px;height:${dim}px">
+      <img src="${meta.img}" alt="${banco}" onerror="this.parentNode.innerHTML='<span style=\\'font-size:9px;font-weight:700;color:${meta.color}\\'>${banco.substring(0,3)}</span>'">
+    </div>`;
+  }
+  return `<div class="bank-logo-text" style="width:${dim}px;height:${dim}px">${banco.substring(0,3)}</div>`;
+}
+
+// ─── FETCH DATA ──────────────────────────────────────────────────────
+async function loadData() {
+  const icon = document.getElementById('ri');
+  icon.classList.add('spinning');
+  setStatus('loading','Actualizando desde Holded...');
+  setBanner('loading','🔄','<strong>Actualizando...</strong> Consultando saldos en tiempo real.');
+
+  try {
+    const res = await fetch(`${API_BASE}/api/balances`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+
+    if (!json.success) throw new Error(json.error || 'Error desconocido');
+
+    DATA = json.data;
+    const ts = new Date(json.updatedAt).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    document.getElementById('sb-ts').textContent = ts;
+
+    const notFound = json.notFound || [];
+    if (notFound.length > 0) {
+      setStatus('error', `${json.found} cuentas OK · ${notFound.length} no encontradas`);
+      setBanner('error','⚠️',`<strong>${json.found} cuentas sincronizadas.</strong> ${notFound.length} no encontradas en Holded: ${notFound.slice(0,3).join(', ')}${notFound.length>3?'...':''}`);
+    } else {
+      setStatus('live', `${json.found} cuentas sincronizadas`);
+      setBanner('success','✅',`<strong>Datos actualizados desde Holded.</strong> ${json.found} cuentas sincronizadas correctamente · ${ts}`);
+    }
+
+    buildSidebarFilters();
+    render();
+
+  } catch (err) {
+    setStatus('error', 'Error de conexión');
+    setBanner('error','❌',`<strong>No se pudo conectar con el servidor.</strong> ${err.message}. Verifica que el servidor esté activo en Render.`);
+    console.error(err);
+  } finally {
+    setTimeout(() => icon.classList.remove('spinning'), 700);
+  }
+}
+
+function setStatus(type, text) {
+  document.getElementById('status-dot').className = `sb-status-dot ${type}`;
+  document.getElementById('status-text').textContent = text;
+}
+function setBanner(type, icon, html) {
+  const b = document.getElementById('sync-banner');
+  b.className = `sync-banner ${type}`;
+  b.innerHTML = `<div class="sync-banner-icon">${icon}</div><div class="sync-banner-text">${html}</div>`;
+}
+
+// ─── AUTO REFRESH ────────────────────────────────────────────────────
+function toggleAutoRefresh() {
+  autoEnabled = !autoEnabled;
+  const btn = document.getElementById('auto-btn');
+  if (autoEnabled) {
+    autoInterval = setInterval(loadData, 60000);
+    btn.textContent = '⏱ Auto ON · 60s';
+    btn.style.background = '#2A7A56';
+  } else {
+    clearInterval(autoInterval);
+    btn.textContent = '⏱ Auto OFF';
+    btn.style.background = '';
+  }
+}
+
+// ─── FILTER ──────────────────────────────────────────────────────────
+function buildSidebarFilters() {
+  const societies = [...new Set(DATA.map(d=>d.sociedad))];
+  let html = `<button class="sb-filter-btn ${currentFilter==='all'?'active':''}" onclick="setFilter('all')">
+    <div class="sb-dot" style="background:var(--rust)"></div> Todas
+  </button>`;
+  societies.forEach(s => {
+    const col = SOCIETY_COLORS[s] || '#888';
+    html += `<button class="sb-filter-btn ${currentFilter===s?'active':''}" onclick="setFilter('${s}')">
+      <div class="sb-dot" style="background:${col}"></div> ${s}
+    </button>`;
+  });
+  document.getElementById('sb-filters').innerHTML = html;
+}
+
+function setFilter(f) {
+  currentFilter = f;
+  buildSidebarFilters();
+  render();
+}
+
+function getFiltered() {
+  if (currentFilter === 'all') return DATA;
+  return DATA.filter(d => d.sociedad === currentFilter);
+}
+
+// ─── SWITCH TAB ──────────────────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-'+tab).classList.add('active');
+  document.getElementById('tab-'+tab).classList.add('active');
+  document.querySelectorAll('.sb-item').forEach(b => b.classList.remove('active'));
+  const map = {sociedad:0,banco:1,restaurante:2,analisis:3};
+  document.querySelectorAll('.sb-item')[map[tab]]?.classList.add('active');
+  render();
+}
+
+// ─── RENDER ──────────────────────────────────────────────────────────
+function render() {
+  const rows = getFiltered();
+  renderKPIs(rows);
+  if (currentTab==='sociedad')    renderSociedad(rows);
+  else if (currentTab==='banco')  renderBanco(rows);
+  else if (currentTab==='restaurante') renderRestaurante(rows);
+  else if (currentTab==='analisis')    renderAnalisis(rows);
+}
+
+function renderKPIs(rows) {
+  const total = rows.reduce((s,r)=>s+(r.saldo||0),0);
+  const sociedades = [...new Set(rows.map(r=>r.sociedad))];
+  const bancos = [...new Set(rows.map(r=>r.banco))];
+  const rests = [...new Set(rows.map(r=>r.restaurante))];
+  const maxVal = Math.max(...rows.map(r=>r.saldo||0));
+  const topRow = rows.find(r=>r.saldo===maxVal);
+  document.getElementById('kpi-grid').innerHTML = `
+    <div class="kpi accent">
+      <div class="kpi-label">Saldo Total</div>
+      <div class="kpi-value pos num">${fmt(total)}</div>
+      <div class="kpi-sub">${rows.length} cuentas · ${sociedades.length} sociedades</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Sociedades</div>
+      <div class="kpi-value num">${sociedades.length}</div>
+      <div class="kpi-sub">${bancos.length} bancos · ${rests.length} restaurantes</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Mayor saldo</div>
+      <div class="kpi-value num" style="font-size:18px">${fmt(maxVal)}</div>
+      <div class="kpi-sub">${topRow?.sociedad||'—'} · ${topRow?.restaurante||'—'}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Media por cuenta</div>
+      <div class="kpi-value num" style="font-size:20px">${fmt(total/(rows.length||1))}</div>
+      <div class="kpi-sub">Cuentas con saldo: ${rows.filter(r=>(r.saldo||0)>0).length}</div>
+    </div>`;
+}
+
+function renderSociedad(rows) {
+  const societyOrder = [...new Set(DATA.map(d=>d.sociedad))];
+  let html='', count=0;
+  societyOrder.forEach(soc => {
+    const sRows = rows.filter(r=>r.sociedad===soc);
+    if (!sRows.length) return;
+    count++;
+    const total = sRows.reduce((s,r)=>s+(r.saldo||0),0);
+    const col = SOCIETY_COLORS[soc]||'#888';
+    const banks = [...new Set(sRows.map(r=>r.banco))];
+    let rowsHtml='';
+    sRows.forEach((r,i)=>{
+      if(i>0) rowsHtml+=`<div class="bank-row-divider"></div>`;
+      const isNull = r.saldo===null;
+      rowsHtml+=`<div class="bank-row">
+        ${bankLogoHtml(r.banco)}
+        <div class="bank-info">
+          <div class="bank-name">${r.banco}</div>
+          <div class="bank-iban">${ibanShort(r.iban)}</div>
+          <div class="bank-holded-name">${r.holdedName||''}</div>
+        </div>
+        <div class="bank-amount ${(r.saldo||0)===0?'zero':''} ${isNull?'sync-error':''} num">
+          ${isNull ? '⚠ no encontrado' : fmt(r.saldo)}
+        </div>
+      </div>`;
+    });
+    html+=`<div class="entity-card" style="animation-delay:${count*0.04}s">
+      <div class="entity-header">
+        <div class="entity-accent-bar" style="background:${col}"></div>
+        <div class="entity-name-wrap">
+          <div class="entity-name">${soc}</div>
+          <div class="entity-rest-tag" style="background:${col}22;color:${needsDark(col)?'#1A1814':col}">${banks.join(' · ')}</div>
+        </div>
+        <div>
+          <div class="entity-total-amount num">${fmt(total)}</div>
+          <div class="entity-total-label">${sRows.length} cuenta${sRows.length>1?'s':''}</div>
+        </div>
+      </div>
+      <div class="bank-rows">${rowsHtml}</div>
+    </div>`;
+  });
+  document.getElementById('grid-sociedad').innerHTML = html;
+  document.getElementById('meta-sociedad').textContent = `${count} sociedades`;
+}
+
+function renderBanco(rows) {
+  const bankOrder = ['SANTANDER','SABADELL','ABANCA','BBVA','BANKINTER','CAIXA'];
+  const BANK_COLORS = {SANTANDER:'#EC0000',SABADELL:'#005C8A',ABANCA:'#00A3A3',BBVA:'#004481',BANKINTER:'#FF6600',CAIXA:'#007BC4'};
+  let html='';
+  bankOrder.forEach((banco,bi)=>{
+    const bRows = rows.filter(r=>r.banco===banco);
+    if (!bRows.length) return;
+    const total = bRows.reduce((s,r)=>s+(r.saldo||0),0);
+    let tableRows='';
+    bRows.forEach(r=>{
+      const isNull = r.saldo===null;
+      tableRows+=`<div class="bt-row">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="bt-tag" style="background:${SOCIETY_COLORS[r.sociedad]||'#888'}"></span>
+          <span style="font-size:12px;font-weight:500;color:var(--ink)">${r.sociedad}</span>
+        </div>
+        <div style="font-size:12px;color:var(--ink2)">${r.restaurante}</div>
+        <div class="bank-iban">${ibanShort(r.iban)}</div>
+        <div class="bt-saldo ${(r.saldo||0)===0?'zero':''} ${isNull?'syncing':''} num">
+          ${isNull?'—':fmt(r.saldo)}
+        </div>
+      </div>`;
+    });
+    html+=`<div class="banco-section" style="animation-delay:${bi*0.05}s">
+      <div class="banco-header">
+        ${bankLogoHtml(banco,'lg')}
+        <div>
+          <div class="banco-name-main">${banco}</div>
+          <div style="font-size:11px;color:var(--ink4)">${bRows.length} cuenta${bRows.length>1?'s':''}</div>
+        </div>
+        <div class="banco-total-amt num">${fmt(total)}</div>
+      </div>
+      <div class="banco-table">
+        <div class="bt-head"><div>Sociedad</div><div>Restaurante</div><div>IBAN</div><div style="text-align:right">Saldo</div></div>
+        ${tableRows}
+      </div>
+    </div>`;
+  });
+  document.getElementById('grid-banco').innerHTML = html;
+  document.getElementById('meta-banco').textContent = `${[...new Set(rows.map(r=>r.banco))].length} bancos`;
+}
+
+function renderRestaurante(rows) {
+  const rests = [...new Set(DATA.map(d=>d.restaurante))].sort();
+  let html='', count=0;
+  rests.forEach(rest=>{
+    const rRows = rows.filter(r=>r.restaurante===rest);
+    if (!rRows.length) return;
+    count++;
+    const total = rRows.reduce((s,r)=>s+(r.saldo||0),0);
+    const col = rRows[0].color||'#888';
+    let rowsHtml='';
+    rRows.forEach((r,i)=>{
+      if(i>0) rowsHtml+=`<div class="bank-row-divider"></div>`;
+      rowsHtml+=`<div class="bank-row">
+        ${bankLogoHtml(r.banco)}
+        <div class="bank-info">
+          <div class="bank-name">${r.banco} <span style="color:var(--ink4);font-weight:400">· ${r.sociedad}</span></div>
+          <div class="bank-iban">${ibanShort(r.iban)}</div>
+        </div>
+        <div class="bank-amount ${(r.saldo||0)===0?'zero':''} num">${r.saldo===null?'—':fmt(r.saldo)}</div>
+      </div>`;
+    });
+    html+=`<div class="entity-card" style="animation-delay:${count*0.04}s">
+      <div class="entity-header">
+        <div class="entity-accent-bar" style="background:${col}"></div>
+        <div class="entity-name-wrap">
+          <div class="entity-name" style="font-size:20px">${rest}</div>
+          <div style="font-size:11px;color:var(--ink4);margin-top:4px">${[...new Set(rRows.map(r=>r.sociedad))].join(', ')}</div>
+        </div>
+        <div>
+          <div class="entity-total-amount num">${fmt(total)}</div>
+          <div class="entity-total-label">${rRows.length} cuenta${rRows.length>1?'s':''}</div>
+        </div>
+      </div>
+      <div class="bank-rows">${rowsHtml}</div>
+    </div>`;
+  });
+  document.getElementById('grid-restaurante').innerHTML = html;
+  document.getElementById('meta-rest').textContent = `${count} restaurantes`;
+}
+
+function renderAnalisis(rows) {
+  const BANK_COLORS={SANTANDER:'#EC0000',SABADELL:'#005C8A',ABANCA:'#00A3A3',BBVA:'#004481',BANKINTER:'#FF6600',CAIXA:'#007BC4'};
+  function makeChart(map, colorFn) {
+    const sorted = Object.entries(map).sort((a,b)=>b[1]-a[1]);
+    const max = sorted[0]?.[1]||1;
+    return sorted.map(([name,val])=>{
+      const pct = Math.round((val/max)*100);
+      const col = colorFn(name);
+      const short = name.length>16?name.substring(0,15)+'…':name;
+      return `<div class="bar-row">
+        <div class="bar-label" title="${name}">${short}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${col}"></div></div>
+        <div class="bar-val num">${fmt(val)}</div>
+      </div>`;
+    }).join('');
+  }
+  const socMap={}, bancMap={}, restMap={};
+  rows.forEach(r=>{
+    socMap[r.sociedad]  = (socMap[r.sociedad]||0)+(r.saldo||0);
+    bancMap[r.banco]    = (bancMap[r.banco]||0)+(r.saldo||0);
+    restMap[r.restaurante]=(restMap[r.restaurante]||0)+(r.saldo||0);
+  });
+  document.getElementById('chart-sociedad').innerHTML = makeChart(socMap, n=>SOCIETY_COLORS[n]||'#888');
+  document.getElementById('chart-banco').innerHTML    = makeChart(bancMap, n=>BANK_COLORS[n]||'#888');
+  document.getElementById('chart-rest').innerHTML     = makeChart(restMap, n=>rows.find(r=>r.restaurante===n)?.color||'#888');
+
+  const total = Object.values(bancMap).reduce((s,v)=>s+v,0)||1;
+  const pieSorted = Object.entries(bancMap).sort((a,b)=>b[1]-a[1]);
+  document.getElementById('chart-pie').innerHTML = pieSorted.map(([name,val])=>{
+    const pct = ((val/total)*100).toFixed(1);
+    return `<div class="bar-row">
+      <div class="bar-label">${name}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${BANK_COLORS[name]||'#888'}"></div></div>
+      <div class="bar-val num">${pct}%</div>
+    </div>`;
+  }).join('');
+
+  const topBanc = pieSorted[0];
+  const topSoc  = Object.entries(socMap).sort((a,b)=>b[1]-a[1])[0];
+  const topBancPct = ((topBanc[1]/total)*100).toFixed(0);
+  const zeroCuentas = rows.filter(r=>(r.saldo||0)===0).length;
+  document.getElementById('suggestions-block').innerHTML = `
+    <div class="sug-title">💡 Recomendaciones</div>
+    <div class="sug-item"><div class="sug-icon">⚠️</div><div class="sug-text"><strong>Concentración bancaria:</strong> ${topBanc[0]} concentra el ${topBancPct}% del saldo (${fmt(topBanc[1])}). Considera diversificar para reducir riesgo de contraparte.</div></div>
+    <div class="sug-item"><div class="sug-icon">📊</div><div class="sug-text"><strong>Cuentas en cero:</strong> ${zeroCuentas} cuenta${zeroCuentas>1?'s':''} con saldo 0 €. Evalúa si pueden cerrarse para simplificar la tesorería.</div></div>
+    <div class="sug-item"><div class="sug-icon">🏆</div><div class="sug-text"><strong>Mayor posición:</strong> <em>${topSoc[0]}</em> es la sociedad con mayor saldo (${fmt(topSoc[1])}). Considera optimizar con productos de ahorro o inversión.</div></div>
+    <div class="sug-item"><div class="sug-icon">🔄</div><div class="sug-text"><strong>Auto-actualización:</strong> Activa el botón <em>Auto ON</em> para refrescar los saldos cada 60 segundos automáticamente.</div></div>`;
+}
+
+// ─── INIT ────────────────────────────────────────────────────────────
+loadData();
+</script>
+</body>
+</html>
