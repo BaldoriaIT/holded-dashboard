@@ -10,9 +10,9 @@ app.use(cors());
 app.use(express.json());
 
 // ─── Servir el dashboard HTML estático ───────────────────────────────
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(__dirname));
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // ─── Mapeo: nombre en Holded → metadatos del dashboard ───────────────
