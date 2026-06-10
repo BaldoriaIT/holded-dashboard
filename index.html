@@ -672,9 +672,8 @@ async function loadData(){
     buildSidebarFilters();
     populateSEPASelects();
     render();
-    // Also refresh remesas and facturas silently
-    loadRemesas(true);
-    loadFacturas(true);
+    // Silently refresh remesas and facturas in background
+    Promise.allSettled([loadRemesas(true), loadFacturas(true)]).catch(()=>{});
   }catch(err){setStatus('error','Error de conexión');setBanner('error','❌',`<strong>Sin conexión con el servidor.</strong> ${err.message}`);console.error(err);}
   finally{setTimeout(()=>icon.classList.remove('spinning'),700);}
 }
@@ -691,27 +690,7 @@ async function loadRemesas(silent=false){
   }catch(err){if(!silent)document.getElementById('remesas-content').innerHTML=`<div style="padding:20px;color:var(--red);font-size:13px">❌ Error al cargar remesas: ${err.message}</div>`;}
 }
 
-// ── FETCH FACTURAS from Holded ──
-async function loadFacturas(silent=false){
-  if(!silent){document.getElementById('facturas-content').innerHTML='<div class="skeleton" style="height:60px;margin-bottom:6px"></div>'.repeat(5);}
-  try{
-    const res=await fetch(`${API_BASE}/api/facturas`);
-    if(!res.ok)throw new Error(`HTTP ${res.status}`);
-    const json=await res.json();
-    FACTURAS_DATA=json.data||[];
-    // Update vencidas badge
-    const vencidas=FACTURAS_DATA.filter(f=>daysDiff(f.dueDate)<0).length;
-    const badge=document.getElementById('badge-vencidas');
-    if(vencidas>0){badge.textContent=vencidas;badge.style.display='inline-flex';}
-    else badge.style.display='none';
-    // Populate CF13 sociedad select
-    const sel=document.getElementById('cf-sociedad-select');
-    const socs=[...new Set(FACTURAS_DATA.map(f=>f.sociedad).filter(Boolean))].sort();
-    socs.forEach(s=>{if(!sel.querySelector(`option[value="${s}"]`)){const o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o);}});
-    if(currentTab==='facturas')renderFacturas();
-    if(currentTab==='cf13')renderCF13();
-  }catch(err){if(!silent)document.getElementById('facturas-content').innerHTML=`<div style="padding:20px;color:var(--red);font-size:13px">❌ Error al cargar facturas: ${err.message}</div>`;}
-}
+// loadFacturas defined below in FACTURAS & SEPA section
 
 // ── AUTO REFRESH ──
 function toggleAuto(){
@@ -741,7 +720,7 @@ function switchTab(tab){
   const sbMap={sociedad:0,banco:1,restaurante:2,graficos:3,traspasos:4,cf13:5,facturas:6,remesas:7};
   document.querySelectorAll('.sb-item')[sbMap[tab]]?.classList.add('active');
   render();
-  if(tab==='facturas'&&FACTURAS_DATA.length===0)loadFacturas();
+  if(tab==='facturas'&&FACTURAS_ALL.length===0)loadFacturas();
   if(tab==='remesas'&&REMESAS_DATA.length===0)loadRemesas();
 }
 
@@ -772,7 +751,7 @@ function render(){
   else if(currentTab==='graficos')renderGraficos(rows);
   else if(currentTab==='traspasos')renderTraspasos();
   else if(currentTab==='cf13')renderCF13();
-  else if(currentTab==='facturas')renderFacturas();
+  else if(currentTab==='facturas')renderFacturasTable();
   else if(currentTab==='remesas')renderRemesas();
 }
 
@@ -781,14 +760,14 @@ function renderKPIs(rows){
   const total=rows.reduce((s,r)=>s+(r.saldo||0),0);
   const socs=[...new Set(rows.map(r=>r.sociedad))];const banks=[...new Set(rows.map(r=>r.banco))];
   const maxV=Math.max(...rows.map(r=>r.saldo||0));const topRow=rows.find(r=>r.saldo===maxV);
-  const vencidas=FACTURAS_DATA.filter(f=>daysDiff(f.dueDate)<0).reduce((s,f)=>s+(f.pendingAmount||0),0);
-  const proximas=FACTURAS_DATA.filter(f=>daysDiff(f.dueDate)>=0&&daysDiff(f.dueDate)<=7).reduce((s,f)=>s+(f.pendingAmount||0),0);
+  const vencidas=FACTURAS_ALL.filter(f=>daysDiff(f.vencimiento)<0).reduce((s,f)=>s+(f.pendiente||0),0);
+  const proximas=FACTURAS_ALL.filter(f=>daysDiff(f.vencimiento)>=0&&daysDiff(f.vencimiento)<=7).reduce((s,f)=>s+(f.pendiente||0),0);
   document.getElementById('kpi-grid').innerHTML=`
     <div class="kpi accent"><div class="kpi-label">Saldo Total</div><div class="kpi-value pos num">${fmt(total)}</div><div class="kpi-sub">${rows.length} cuentas · ${socs.length} sociedades</div></div>
     <div class="kpi"><div class="kpi-label">Mayor posición</div><div class="kpi-value num" style="font-size:19px">${fmtK(maxV)}</div><div class="kpi-sub">${topRow?.sociedad||'—'} · ${topRow?.restaurante||'—'}</div></div>
     <div class="kpi"><div class="kpi-label">Bancos activos</div><div class="kpi-value num">${banks.length}</div><div class="kpi-sub">${rows.filter(r=>(r.saldo||0)>0).length} cuentas con saldo</div></div>
-    <div class="kpi ${vencidas>0?'danger':''}"><div class="kpi-label">Facturas vencidas</div><div class="kpi-value neg num" style="font-size:19px">${vencidas>0?fmt(vencidas):'—'}</div><div class="kpi-sub">${FACTURAS_DATA.filter(f=>daysDiff(f.dueDate)<0).length} facturas</div></div>
-    <div class="kpi ${proximas>0?'warn':''}"><div class="kpi-label">Vence en 7 días</div><div class="kpi-value num" style="font-size:19px;color:var(--amber)">${proximas>0?fmt(proximas):'—'}</div><div class="kpi-sub">${FACTURAS_DATA.filter(f=>daysDiff(f.dueDate)>=0&&daysDiff(f.dueDate)<=7).length} facturas</div></div>`;
+    <div class="kpi ${vencidas>0?'danger':''}"><div class="kpi-label">Facturas vencidas</div><div class="kpi-value neg num" style="font-size:19px">${vencidas>0?fmt(vencidas):'—'}</div><div class="kpi-sub">${FACTURAS_ALL.filter(f=>daysDiff(f.vencimiento)<0).length} facturas</div></div>
+    <div class="kpi ${proximas>0?'warn':''}"><div class="kpi-label">Vence en 7 días</div><div class="kpi-value num" style="font-size:19px;color:var(--amber)">${proximas>0?fmt(proximas):'—'}</div><div class="kpi-sub">${FACTURAS_ALL.filter(f=>daysDiff(f.vencimiento)>=0&&daysDiff(f.vencimiento)<=7).length} facturas</div></div>`;
 }
 
 // ── SOCIEDAD ──
@@ -805,7 +784,7 @@ function renderSociedad(rows){
     sRows.forEach((r,i)=>{
       if(i>0)rowsHtml+=`<div class="bank-row-divider"></div>`;
       // alert chip
-      const facV=FACTURAS_DATA.filter(f=>f.sociedad===soc&&daysDiff(f.dueDate)<0).reduce((s,f)=>s+(f.pendingAmount||0),0);
+      const facV=FACTURAS_ALL.filter(f=>f.sociedad===soc&&daysDiff(f.vencimiento)<0).reduce((s,f)=>s+(f.pendiente||0),0);
       const alertHtml=facV>0?`<div class="alert-chip red" style="margin-top:2px">⚠ ${fmt(facV)} vencido</div>`:'';
       rowsHtml+=`<div class="bank-row">
         ${bankLogoHtml(r.banco)}
@@ -1053,8 +1032,8 @@ function findAccountName(iban){
 // ── CF 13 SEMANAS ──
 function renderCF13(){
   const socFilter=document.getElementById('cf-sociedad-select')?.value||'all';
-  const facts=socFilter==='all'?FACTURAS_DATA:FACTURAS_DATA.filter(f=>f.sociedad===socFilter);
-  if(facts.length===0){document.getElementById('cf13-content').innerHTML=`<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px">📅</div><div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin datos de facturas</div><div style="font-size:13px;margin-top:6px">Carga las facturas desde Holded</div><button class="btn btn-dark" style="margin:16px auto 0;display:inline-flex" onclick="loadFacturas()">Cargar facturas</button></div>`;return;}
+  const facts=socFilter==='all'?FACTURAS_ALL:FACTURAS_ALL.filter(f=>f.sociedad===socFilter);
+  if(!facts||facts.length===0){document.getElementById('cf13-content').innerHTML=`<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px">📅</div><div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin datos de facturas</div><div style="font-size:13px;margin-top:6px">Carga las facturas desde Holded</div><button class="btn btn-dark" style="margin:16px auto 0;display:inline-flex" onclick="loadFacturas()">Cargar facturas</button></div>`;return;}
 
   // Group by week (13 weeks from today)
   const weeks=[];
@@ -1066,14 +1045,14 @@ function renderCF13(){
   }
   // Add past (vencidas) to week 0
   facts.forEach(f=>{
-    const d=new Date(f.dueDate);const amt=f.pendingAmount||0;
+    const d=new Date(f.vencimiento);const amt=f.pendiente||0;
     let placed=false;
-    weeks.forEach(w=>{if(d>=w.start&&d<=w.end){if(f.type==='income')w.ingresos.push(amt);else w.gastos.push(amt);placed=true;}});
+    weeks.forEach(w=>{if(d>=w.start&&d<=w.end){if(f.estadoCode===99)w.ingresos.push(amt);else w.gastos.push(amt);placed=true;}});
     if(!placed&&d<weeks[0].start){if(f.type==='income')weeks[0].ingresos.push(amt);else weeks[0].gastos.push(amt);}
   });
 
   // Build saldo acumulado
-  const currentCash=DATA.filter(d=>socFilter==='all'||d.sociedad===socFilter).reduce((s,r)=>s+(r.saldo||0),0);
+  const currentCash=(DATA||[]).filter(d=>socFilter==='all'||d.sociedad===socFilter).reduce((s,r)=>s+(r.saldo||0),0);
   let acum=currentCash;
   let rowsHtml=`<div class="cf-week-row cf-week-head"><div>Semana</div><div style="text-align:right">Cobros</div><div style="text-align:right">Pagos</div><div style="text-align:right">Neto</div><div style="text-align:right">Saldo acum.</div></div>`;
   weeks.forEach((w,i)=>{
@@ -1090,8 +1069,8 @@ function renderCF13(){
     </div>`;
   });
 
-  const totalIngr=facts.filter(f=>f.type==='income').reduce((s,f)=>s+(f.pendingAmount||0),0);
-  const totalGast=facts.filter(f=>f.type!=='income').reduce((s,f)=>s+(f.pendingAmount||0),0);
+  const totalIngr=0;
+  const totalGast=facts.reduce((s,f)=>s+(f.pendiente||0),0);
   document.getElementById('cf13-content').innerHTML=`
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
       <div class="kpi"><div class="kpi-label">Saldo actual</div><div class="kpi-value pos num" style="font-size:20px">${fmt(currentCash)}</div></div>
@@ -1110,8 +1089,8 @@ function renderCF13(){
 // ═══════════════════════════════════════════════════════════════════
 let FACTURAS_ALL = [];
 let FACTURAS_FILTERED = [];
-let selectedFacturas = new Set();
-let estadoFilter = 'all';
+// selectedFacturas and estadoFilter already declared above
+
 
 async function loadFacturas(silent=false) {
   if (!silent) {
