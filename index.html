@@ -672,8 +672,9 @@ async function loadData(){
     buildSidebarFilters();
     populateSEPASelects();
     render();
-    // Silently refresh remesas and facturas in background
-    Promise.allSettled([loadRemesas(true), loadFacturas(true)]).catch(()=>{});
+    // Also refresh remesas and facturas silently
+    loadRemesas(true);
+    loadFacturas(true);
   }catch(err){setStatus('error','Error de conexión');setBanner('error','❌',`<strong>Sin conexión con el servidor.</strong> ${err.message}`);console.error(err);}
   finally{setTimeout(()=>icon.classList.remove('spinning'),700);}
 }
@@ -690,7 +691,7 @@ async function loadRemesas(silent=false){
   }catch(err){if(!silent)document.getElementById('remesas-content').innerHTML=`<div style="padding:20px;color:var(--red);font-size:13px">❌ Error al cargar remesas: ${err.message}</div>`;}
 }
 
-// loadFacturas defined below in FACTURAS & SEPA section
+// loadFacturas → defined in FACTURAS & SEPA section below
 
 // ── AUTO REFRESH ──
 function toggleAuto(){
@@ -1033,7 +1034,7 @@ function findAccountName(iban){
 function renderCF13(){
   const socFilter=document.getElementById('cf-sociedad-select')?.value||'all';
   const facts=socFilter==='all'?FACTURAS_ALL:FACTURAS_ALL.filter(f=>f.sociedad===socFilter);
-  if(!facts||facts.length===0){document.getElementById('cf13-content').innerHTML=`<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px">📅</div><div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin datos de facturas</div><div style="font-size:13px;margin-top:6px">Carga las facturas desde Holded</div><button class="btn btn-dark" style="margin:16px auto 0;display:inline-flex" onclick="loadFacturas()">Cargar facturas</button></div>`;return;}
+  if(facts.length===0){document.getElementById('cf13-content').innerHTML=`<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px">📅</div><div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin datos de facturas</div><div style="font-size:13px;margin-top:6px">Carga las facturas desde Holded</div><button class="btn btn-dark" style="margin:16px auto 0;display:inline-flex" onclick="loadFacturas()">Cargar facturas</button></div>`;return;}
 
   // Group by week (13 weeks from today)
   const weeks=[];
@@ -1047,12 +1048,12 @@ function renderCF13(){
   facts.forEach(f=>{
     const d=new Date(f.vencimiento);const amt=f.pendiente||0;
     let placed=false;
-    weeks.forEach(w=>{if(d>=w.start&&d<=w.end){if(f.estadoCode===99)w.ingresos.push(amt);else w.gastos.push(amt);placed=true;}});
+    weeks.forEach(w=>{if(d>=w.start&&d<=w.end){w.gastos.push(amt);placed=true;}});
     if(!placed&&d<weeks[0].start){if(f.type==='income')weeks[0].ingresos.push(amt);else weeks[0].gastos.push(amt);}
   });
 
   // Build saldo acumulado
-  const currentCash=(DATA||[]).filter(d=>socFilter==='all'||d.sociedad===socFilter).reduce((s,r)=>s+(r.saldo||0),0);
+  const currentCash=DATA.filter(d=>socFilter==='all'||d.sociedad===socFilter).reduce((s,r)=>s+(r.saldo||0),0);
   let acum=currentCash;
   let rowsHtml=`<div class="cf-week-row cf-week-head"><div>Semana</div><div style="text-align:right">Cobros</div><div style="text-align:right">Pagos</div><div style="text-align:right">Neto</div><div style="text-align:right">Saldo acum.</div></div>`;
   weeks.forEach((w,i)=>{
@@ -1085,28 +1086,29 @@ function renderCF13(){
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// FACTURAS & SEPA — complete implementation
+// FACTURAS & SEPA
 // ═══════════════════════════════════════════════════════════════════
 let FACTURAS_ALL = [];
 let FACTURAS_FILTERED = [];
-// selectedFacturas and estadoFilter already declared above
-
+let estadoFilter = 'all';
 
 async function loadFacturas(silent=false) {
   if (!silent) {
-    document.getElementById('facturas-content').innerHTML =
-      '<div style="text-align:center;padding:40px;color:var(--ink4)"><div style="font-size:32px">⏳</div><div style="margin-top:10px">Cargando facturas desde Holded...</div></div>';
+    const el = document.getElementById('facturas-content');
+    if (el) el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--ink4)"><div style="font-size:28px">⏳</div><div style="margin-top:10px;font-size:13px">Cargando facturas desde Holded...</div></div>';
   }
   try {
     const res = await fetch(`${API_BASE}/api/facturas`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     FACTURAS_ALL = json.data || [];
+
+    // Update vencidas badge
     const nVenc = FACTURAS_ALL.filter(f => daysDiff(f.vencimiento) < 0).length;
     const badge = document.getElementById('badge-vencidas');
     if (badge) { badge.textContent = nVenc; badge.style.display = nVenc > 0 ? 'inline-flex' : 'none'; }
-    populateFacturaFilters();
-    populateSEPASelects();
+
+    // Populate CF13 select
     const cfSel = document.getElementById('cf-sociedad-select');
     if (cfSel) {
       const socs = [...new Set(FACTURAS_ALL.map(f => f.sociedad).filter(Boolean))].sort();
@@ -1116,12 +1118,19 @@ async function loadFacturas(silent=false) {
         }
       });
     }
+    populateFacturaFilters();
+    populateSEPASelects();
     applyFacturaFilters();
     if (currentTab === 'cf13') renderCF13();
+    if (json.errors && json.errors.length > 0) {
+      console.warn('Facturas errors:', json.errors);
+    }
   } catch(err) {
-    if (!silent)
-      document.getElementById('facturas-content').innerHTML =
-        `<div style="padding:20px;color:var(--red);font-size:13px">Error: ${err.message}</div>`;
+    if (!silent) {
+      const el = document.getElementById('facturas-content');
+      if (el) el.innerHTML = `<div style="padding:20px;color:var(--red);font-size:13px">❌ Error al cargar facturas: ${err.message}</div>`;
+    }
+    console.error('loadFacturas:', err);
   }
 }
 
@@ -1129,11 +1138,12 @@ function populateFacturaFilters() {
   const socSel  = document.getElementById('f-sociedad');
   const projSel = document.getElementById('f-proyecto');
   if (!socSel || !projSel) return;
+  const curSoc  = socSel.value;
+  const curProj = projSel.value;
   const socs  = [...new Set(FACTURAS_ALL.map(f => f.sociedad).filter(Boolean))].sort();
-  const projs = [...new Set(FACTURAS_ALL.map(f => f.proyecto).filter(Boolean))].sort();
-  const curSoc = socSel.value; const curProj = projSel.value;
-  socSel.innerHTML  = '<option value="">Todas</option>'  + socs.map(s  => `<option value="${s}">${s}</option>`).join('');
-  projSel.innerHTML = '<option value="">Todos</option>' + projs.map(p => `<option value="${p}">${p}</option>`).join('');
+  const projs = [...new Set(FACTURAS_ALL.map(f => f.proyecto).filter(x => x && x.trim()))].sort();
+  socSel.innerHTML  = '<option value="">Todas las sociedades</option>' + socs.map(s => `<option value="${s}">${s}</option>`).join('');
+  projSel.innerHTML = '<option value="">Todos los proyectos</option>' + projs.map(p => `<option value="${p}">${p}</option>`).join('');
   if (curSoc)  socSel.value  = curSoc;
   if (curProj) projSel.value = curProj;
 }
@@ -1141,9 +1151,9 @@ function populateFacturaFilters() {
 function applyFacturaFilters() {
   const socF  = document.getElementById('f-sociedad')?.value  || '';
   const projF = document.getElementById('f-proyecto')?.value || '';
-  let f = FACTURAS_ALL;
-  if (socF)  f = f.filter(x => x.sociedad  === socF);
-  if (projF) f = f.filter(x => x.proyecto  === projF);
+  let f = FACTURAS_ALL.slice();
+  if (socF)  f = f.filter(x => x.sociedad === socF);
+  if (projF) f = f.filter(x => x.proyecto === projF);
   if (estadoFilter === 'vencidas') f = f.filter(x => daysDiff(x.vencimiento) < 0);
   else if (estadoFilter === '7d')  f = f.filter(x => { const d=daysDiff(x.vencimiento); return d>=0&&d<=7; });
   else if (estadoFilter === '30d') f = f.filter(x => { const d=daysDiff(x.vencimiento); return d>=0&&d<=30; });
@@ -1163,57 +1173,96 @@ function renderFacturasTable() {
   const totalAmt = facts.reduce((s,f)=>s+(f.pendiente||0),0);
   const countEl = document.getElementById('total-count');
   if (countEl) countEl.textContent = `${facts.length} factura${facts.length!==1?'s':''} · ${fmt(totalAmt)}`;
-  if (facts.length === 0) {
+
+  if (FACTURAS_ALL.length === 0) {
     document.getElementById('facturas-content').innerHTML =
-      '<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px">📄</div><div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin facturas con estos filtros</div></div>';
+      '<div style="text-align:center;padding:60px;color:var(--ink4)">' +
+      '<div style="font-size:40px">📄</div>' +
+      '<div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin facturas cargadas</div>' +
+      '<div style="font-size:13px;margin-top:6px">Pulsa "Actualizar facturas" para cargar desde Holded</div>' +
+      '<button class="btn btn-dark" style="margin:16px auto 0;display:inline-flex" onclick="loadFacturas()">Cargar desde Holded</button>' +
+      '</div>';
     return;
   }
+
+  if (facts.length === 0) {
+    document.getElementById('facturas-content').innerHTML =
+      '<div style="text-align:center;padding:40px;color:var(--ink4)">' +
+      '<div style="font-size:32px">🔍</div>' +
+      '<div style="font-family:var(--font-display);font-size:18px;margin-top:10px">Sin facturas con estos filtros</div>' +
+      '<div style="font-size:12px;margin-top:4px">Prueba a cambiar los filtros o seleccionar "Todas"</div>' +
+      '</div>';
+    return;
+  }
+
+  // Group by sociedad
   const grouped = {};
   facts.forEach(f => { if (!grouped[f.sociedad]) grouped[f.sociedad] = []; grouped[f.sociedad].push(f); });
+
   let html = '';
   Object.entries(grouped).sort(([a],[b])=>a.localeCompare(b)).forEach(([soc, sfacts]) => {
     const col = SOC_COLORS[soc] || '#888';
     const socTotal = sfacts.reduce((s,f)=>s+(f.pendiente||0),0);
-    html += `<div style="margin-bottom:20px">
+    const socSelTotal = sfacts.filter(f=>selectedFacturas.has(f.id)).reduce((s,f)=>s+(f.pendiente||0),0);
+
+    html += `<div style="margin-bottom:24px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <div style="width:11px;height:11px;border-radius:50%;background:${col}"></div>
         <div style="font-family:var(--font-display);font-size:17px;color:var(--ink)">${soc}</div>
-        <div style="font-size:11px;color:var(--ink4)">${sfacts.length} facturas · ${fmt(socTotal)}</div>
-        <button class="btn btn-outline btn-sm" style="margin-left:auto" onclick="selAllSoc('${soc.replace(/'/g,"\\'")}')">Sel. sociedad</button>
+        <div style="font-size:11px;color:var(--ink4)">${sfacts.length} factura${sfacts.length!==1?'s':''} · ${fmt(socTotal)}</div>
+        ${socSelTotal>0?`<div style="font-size:11px;color:var(--rust);margin-left:4px">· ${fmt(socSelTotal)} sel.</div>`:''}
+        <button class="btn btn-outline btn-sm" style="margin-left:auto;padding:4px 10px" onclick="selAllSoc('${soc.replace(/'/g,"\'")}')">Sel. sociedad</button>
       </div>
       <div class="ftable-wrap"><div class="ftable-scroll"><table class="ftable">
         <thead><tr>
-          <th><input type="checkbox" class="ftable-check" onchange="toggleSocAll('${soc.replace(/'/g,"\\'")}',this.checked)"></th>
-          <th>F. Emisión</th><th>Vencimiento</th><th>Nº Factura</th><th>Proveedor</th>
-          <th>Proyecto</th><th>Cuenta</th><th>F. Pago</th><th class="num-col">Pendiente</th><th>Estado</th>
-        </tr></thead><tbody>`;
-    sfacts.sort((a,b)=>(a.vencimiento||'').localeCompare(b.vencimiento||'')).forEach(f => {
-      const days = daysDiff(f.vencimiento);
+          <th style="width:32px"><input type="checkbox" class="ftable-check" onchange="toggleSocAll('${soc.replace(/'/g,"\'")}',this.checked)" title="Seleccionar toda la sociedad"></th>
+          <th>F. Emisión</th>
+          <th>Vencimiento</th>
+          <th>Nº Factura</th>
+          <th>Proveedor</th>
+          <th>Proyecto</th>
+          <th>Cuenta</th>
+          <th>F. Pago</th>
+          <th class="num-col">Pendiente</th>
+          <th>Estado</th>
+        </tr></thead>
+        <tbody>`;
+
+    sfacts.sort((a,b)=>(a.vencimiento||'9999').localeCompare(b.vencimiento||'9999')).forEach(f => {
+      const days   = daysDiff(f.vencimiento);
       const rowCls = days < 0 ? 'vencida' : (days <= 7 ? 'proxima' : '');
       const isSel  = selectedFacturas.has(f.id);
       let diasHtml = '';
-      if      (days < 0)  diasHtml = `<span class="dias-badge red">${Math.abs(days)}d</span>`;
-      else if (days <= 7) diasHtml = `<span class="dias-badge amber">${days}d</span>`;
-      else                diasHtml = `<span class="dias-badge green">${days}d</span>`;
-      const estadoCls = f.estadoCode===4?'estado-vencida':f.estadoCode===3?'estado-parcial':f.estadoCode===2?'estado-pagado':'estado-pendiente';
-      const fid = f.id.replace(/'/g,"\\'");
+      if      (days < 0)   diasHtml = `<span class="dias-badge red" title="${Math.abs(days)} días de retraso">${Math.abs(days)}d</span>`;
+      else if (days <= 7)  diasHtml = `<span class="dias-badge amber" title="Vence en ${days} días">${days}d</span>`;
+      else if (days <= 30) diasHtml = `<span class="dias-badge green" title="Vence en ${days} días">${days}d</span>`;
+
+      const estadoCls = {1:'estado-pendiente',2:'estado-pagado',3:'estado-parcial',4:'estado-vencida'}[f.estadoCode] || 'estado-pendiente';
+      const safeId = (f.id||'').replace(/'/g,"\'");
+
       html += `<tr class="${rowCls}${isSel?' selected':''}" id="frow-${f.id}">
-        <td><input type="checkbox" class="ftable-check" ${isSel?'checked':''} onchange="toggleF('${fid}',this.checked)"></td>
-        <td>${f.fechaEmision ? new Date(f.fechaEmision).toLocaleDateString('es-ES') : '-'}</td>
-        <td>${f.vencimiento ? new Date(f.vencimiento).toLocaleDateString('es-ES') : '-'} ${diasHtml}</td>
-        <td style="font-family:var(--font-mono);font-size:10.5px">${f.num||'-'}</td>
-        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(f.proveedor||'')}">${f.proveedor||'-'}</td>
-        <td style="font-size:11px;color:var(--ink4)">${f.proyecto||'-'}</td>
-        <td style="font-size:10.5px;color:var(--ink4)">${f.cuenta||'-'}</td>
-        <td style="font-size:11px">${f.formaPago||'-'}</td>
-        <td class="num-col">${fmt(f.pendiente)}</td>
+        <td><input type="checkbox" class="ftable-check" ${isSel?'checked':''} onchange="toggleF('${safeId}',this.checked)"></td>
+        <td style="white-space:nowrap">${f.fechaEmision ? new Date(f.fechaEmision+'T00:00:00').toLocaleDateString('es-ES') : '—'}</td>
+        <td style="white-space:nowrap">${f.vencimiento ? new Date(f.vencimiento+'T00:00:00').toLocaleDateString('es-ES') : '—'} ${diasHtml}</td>
+        <td style="font-family:var(--font-mono);font-size:10.5px;color:var(--ink2)">${escapeHtml(f.num||'—')}</td>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(f.proveedor||'')}">${escapeHtml(f.proveedor||'—')}</td>
+        <td style="font-size:11px;color:var(--ink4);max-width:100px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(f.proyecto||'—')}</td>
+        <td style="font-size:10.5px;color:var(--ink4);max-width:100px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(f.cuenta||'—')}</td>
+        <td style="font-size:11px;color:var(--ink4)">${escapeHtml(f.formaPago||'—')}</td>
+        <td class="num-col" style="font-weight:${days<0?600:400};color:${days<0?'var(--red)':'inherit'}">${fmt(f.pendiente)}</td>
         <td><span class="estado-badge ${estadoCls}">${f.estado}</span></td>
       </tr>`;
     });
+
     html += '</tbody></table></div></div></div>';
   });
+
   document.getElementById('facturas-content').innerHTML = html;
   updateSelectionBar();
+}
+
+function escapeHtml(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function toggleF(id, checked) {
@@ -1224,13 +1273,18 @@ function toggleF(id, checked) {
   const btn=document.getElementById('btn-build-sepa'); if(btn) btn.disabled=selectedFacturas.size===0;
   updateLiquidityCheck();
 }
+
 function toggleSocAll(soc, checked) {
-  FACTURAS_FILTERED.filter(f=>f.sociedad===soc).forEach(f=>{ if(checked) selectedFacturas.add(f.id); else selectedFacturas.delete(f.id); });
-  applyFacturaFilters(); updateLiquidityCheck();
+  FACTURAS_FILTERED.filter(f=>f.sociedad===soc).forEach(f=>{
+    if(checked) selectedFacturas.add(f.id); else selectedFacturas.delete(f.id);
+  });
+  renderFacturasTable();
+  updateLiquidityCheck();
 }
+
 function selAllSoc(soc) { toggleSocAll(soc, true); }
-function selAll()   { FACTURAS_FILTERED.forEach(f=>selectedFacturas.add(f.id));   applyFacturaFilters(); updateLiquidityCheck(); }
-function deselAll() { selectedFacturas.clear(); applyFacturaFilters(); updateLiquidityCheck(); }
+function selAll()   { FACTURAS_FILTERED.forEach(f=>selectedFacturas.add(f.id)); renderFacturasTable(); updateLiquidityCheck(); }
+function deselAll() { selectedFacturas.clear(); renderFacturasTable(); updateLiquidityCheck(); }
 
 function updateSelectionBar() {
   const bar=document.getElementById('sel-bar'); if(!bar) return;
@@ -1247,13 +1301,18 @@ function populateSEPASelects() {
   const socs=[...new Set((DATA||[]).map(d=>d.sociedad))].sort();
   socSel.innerHTML='<option value="">— Selecciona —</option>'+socs.map(s=>`<option value="${s}">${s}</option>`).join('');
 }
+
 function onSepaSocChange() {
-  const soc=document.getElementById('sepa-sociedad').value;
+  const soc=document.getElementById('sepa-sociedad')?.value;
   const cuentaSel=document.getElementById('sepa-cuenta');
+  if(!cuentaSel) return;
   const cuentas=(DATA||[]).filter(d=>d.sociedad===soc);
-  cuentaSel.innerHTML='<option value="">— Selecciona cuenta —</option>'+cuentas.map(c=>`<option value="${c.iban}">${c.holdedName} — ${ibanShort(c.iban)} (${fmt(c.saldo||0)})</option>`).join('');
-  updateLiquidityCheck(); updateSEPAStatus();
+  cuentaSel.innerHTML='<option value="">— Selecciona cuenta —</option>'+
+    cuentas.map(c=>`<option value="${c.iban}">${c.holdedName} — ${ibanShort(c.iban)} (${fmt(c.saldo||0)})</option>`).join('');
+  updateLiquidityCheck();
+  updateSEPAStatus();
 }
+
 function updateLiquidityCheck() {
   const panel=document.getElementById('liq-panel'); if(!panel) return;
   const iban=document.getElementById('sepa-cuenta')?.value||'';
@@ -1266,9 +1325,13 @@ function updateLiquidityCheck() {
   const ic=diff<0?'🔴':diff<selTotal*0.15?'🟡':'🟢';
   const diffHtml=diff>=0
     ?`Quedará <strong class="num" style="color:var(--green)">${fmt(diff)}</strong>`
-    :`<strong style="color:var(--red)">Insuficiente — faltan ${fmt(Math.abs(diff))}</strong>`;
-  panel.innerHTML=`<div class="liq-alert ${cls}"><div class="liq-icon">${ic}</div><div class="liq-text"><strong>${acc.holdedName||acc.banco}:</strong> Saldo disponible <strong class="num">${fmt(saldo)}</strong> · Pagos seleccionados <strong class="num">${fmt(selTotal)}</strong> · ${diffHtml}</div></div>`;
+    :`<strong style="color:var(--red)">⚠ Insuficiente — faltan ${fmt(Math.abs(diff))}</strong>`;
+  panel.innerHTML=`<div class="liq-alert ${cls}"><div class="liq-icon">${ic}</div>` +
+    `<div class="liq-text"><strong>${acc.holdedName||acc.banco}:</strong> ` +
+    `Saldo disponible <strong class="num">${fmt(saldo)}</strong> · ` +
+    `Pagos seleccionados <strong class="num">${fmt(selTotal)}</strong> · ${diffHtml}</div></div>`;
 }
+
 function updateSEPAStatus() {
   const soc=document.getElementById('sepa-sociedad')?.value;
   const cuenta=document.getElementById('sepa-cuenta')?.value;
@@ -1291,17 +1354,20 @@ function openBuildSEPA() {
   if (!cuenta) { alert('Selecciona la cuenta de cargo.'); return; }
   if (!concep) { alert('El concepto es obligatorio.'); return; }
   if (!fecha)  { alert('La fecha de la remesa es obligatoria (DD/MM/AAAA).'); return; }
-  const dateRe = /^\d{2}\/\d{2}\/\d{4}$/;
-  if (!dateRe.test(fecha)) { alert('Formato de fecha incorrecto. Usa DD/MM/AAAA.'); return; }
+  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(fecha)) { alert('Formato de fecha incorrecto. Usa DD/MM/AAAA.'); return; }
   if (selectedFacturas.size === 0) { alert('Selecciona al menos una factura.'); return; }
+
   const selFacts=FACTURAS_ALL.filter(f=>selectedFacturas.has(f.id));
   const total=selFacts.reduce((s,f)=>s+(f.pendiente||0),0);
+
   const rows=selFacts.map(f=>`<tr>
     <td style="font-size:11.5px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(f.proveedor||'')}</td>
     <td style="font-family:var(--font-mono);font-size:10px;color:var(--ink4)">${f.num||''}</td>
     <td style="text-align:right;font-family:var(--font-num);font-size:13px">${fmt(f.pendiente)}</td>
     <td style="font-size:10px;color:var(--ink4)">${f.sociedad}</td>
+    <td style="font-size:10px;color:var(--ink4)">${f.vencimiento||'—'}</td>
   </tr>`).join('');
+
   document.getElementById('modal-title').textContent='Confirmar remesa SEPA';
   document.getElementById('modal-body').innerHTML=`
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
@@ -1309,18 +1375,19 @@ function openBuildSEPA() {
       <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-value num">${selFacts.length}</div></div>
       <div class="kpi accent"><div class="kpi-label">Total</div><div class="kpi-value pos num">${fmt(total)}</div></div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-      <div><div style="font-size:10px;color:var(--ink4);text-transform:uppercase;margin-bottom:4px">Cuenta de cargo</div><div style="font-family:var(--font-mono);font-size:11px">${cuenta}</div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">
+      <div><div style="font-size:10px;color:var(--ink4);text-transform:uppercase;margin-bottom:4px">Cuenta de cargo</div><div style="font-family:var(--font-mono);font-size:11px;word-break:break-all">${cuenta}</div></div>
       <div><div style="font-size:10px;color:var(--ink4);text-transform:uppercase;margin-bottom:4px">Fecha ejecución</div><div style="font-size:13px">${fecha}</div></div>
+      <div><div style="font-size:10px;color:var(--ink4);text-transform:uppercase;margin-bottom:4px">Concepto</div><div style="font-size:12px">${escapeHtml(concep)}</div></div>
     </div>
-    <div style="font-family:var(--font-display);font-size:16px;margin-bottom:10px">Detalle de facturas</div>
+    <div style="font-family:var(--font-display);font-size:16px;margin-bottom:8px">Detalle de facturas</div>
     <div class="ftable-wrap"><table class="ftable" style="min-width:auto">
-      <thead><tr><th>Proveedor</th><th>Nº</th><th class="num-col">Pendiente</th><th>Sociedad</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <thead><tr><th>Proveedor</th><th>Nº</th><th class="num-col">Pendiente</th><th>Sociedad</th><th>Vencimiento</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
   document.getElementById('modal-footer').innerHTML=`
     <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
-    <button class="btn btn-rust" id="btn-exec-sepa">⚡ Crear y descargar XML</button>`;
-  // Store params for execution
+    <button class="btn btn-rust" id="btn-exec-sepa">⚡ Crear XML y registrar en Holded</button>`;
   window._sepaParams = {soc, cuenta, concep, fecha};
   document.getElementById('btn-exec-sepa').onclick = () => executeCreateSEPA();
   document.getElementById('modal-overlay').classList.remove('hidden');
@@ -1328,7 +1395,7 @@ function openBuildSEPA() {
 
 async function executeCreateSEPA() {
   const {soc,cuenta,concep,fecha} = window._sepaParams;
-  document.getElementById('modal-footer').innerHTML='<div style="color:var(--ink4);font-size:13px">⏳ Creando remesa en Holded...</div>';
+  document.getElementById('modal-footer').innerHTML='<div style="color:var(--ink4);font-size:13px">⏳ Creando remesa en Holded y generando XML...</div>';
   try {
     const res=await fetch(`${API_BASE}/api/create-remesa`,{
       method:'POST',headers:{'Content-Type':'application/json'},
@@ -1336,33 +1403,34 @@ async function executeCreateSEPA() {
     });
     const json=await res.json();
     if(!json.success) throw new Error(json.error);
+
     // Auto-download XML
     const blob=new Blob([json.xml],{type:'application/xml'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url; a.download=`remesa_SEPA_${fecha.split('/').join('-')}.xml`; a.click();
     URL.revokeObjectURL(url);
-    // Show result
+
     document.getElementById('modal-body').innerHTML+=`
-      <div style="margin-top:16px;padding:12px;background:rgba(42,122,86,0.08);border-radius:8px;border:1px solid rgba(42,122,86,0.2)">
-        <div style="color:var(--green);font-size:13px;font-weight:500;margin-bottom:6px">✅ XML descargado — ${json.count} transacciones — ${fmt(json.total)}</div>
-        ${json.remesaId?`<div style="font-size:10px;color:var(--ink4)">ID Holded: ${json.remesaId}</div>`:''}
-      </div>
-      <div style="font-size:11px;color:var(--ink4);margin:10px 0 4px">Vista previa XML:</div>
-      <div class="xml-preview">${escapeHtml(json.xml).substring(0,800)}${json.xml.length>800?'\n...':''}</div>`;
-    const txList=json.transactions||[];
+      <div style="margin-top:16px;padding:14px;background:rgba(42,122,86,0.08);border-radius:8px;border:1px solid rgba(42,122,86,0.2)">
+        <div style="color:var(--green);font-size:13px;font-weight:500;margin-bottom:4px">✅ XML descargado — ${json.count} transacciones — ${fmt(json.total)}</div>
+        ${json.remesaId?`<div style="font-size:10.5px;color:var(--ink4)">ID Holded: ${json.remesaId}</div>`:'<div style="font-size:10.5px;color:var(--amber)">⚠ No se pudo registrar en Holded (no bloqueante)</div>'}
+        <div style="font-size:11px;color:var(--ink4);margin-top:4px">Archivo guardado: remesa_SEPA_${fecha.split('/').join('-')}.xml</div>
+      </div>`;
+
+    const txList = json.transactions || [];
     document.getElementById('modal-footer').innerHTML=`
-      <button class="btn btn-outline" onclick="closeModal()">Cerrar</button>
-      <button class="btn btn-green" id="btn-mark-paid">✓ Marcar facturas como Pagado en Holded</button>`;
-    document.getElementById('btn-mark-paid').onclick=()=>markPaid(txList,cuenta,fecha,concep);
+      <button class="btn btn-outline" onclick="closeModal()">Cerrar sin marcar</button>
+      <button class="btn btn-green" id="btn-mark-paid-final">✓ Marcar ${txList.length} factura(s) como Pagado en Holded</button>`;
+    document.getElementById('btn-mark-paid-final').onclick = () => markPaid(txList, cuenta, fecha, concep);
   } catch(err) {
-    document.getElementById('modal-footer').innerHTML=`<div style="color:var(--red);font-size:13px">Error: ${err.message}</div><button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
+    document.getElementById('modal-footer').innerHTML=`<div style="color:var(--red);font-size:13px">❌ ${err.message}</div><button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
   }
 }
 
-async function markPaid(transactions,debtorIBAN,fechaRemesa,concepto) {
-  if(!confirm(`Marcar ${transactions.length} factura(s) como PAGADAS en Holded?\nCuenta: ${ibanShort(debtorIBAN)} · Fecha: ${fechaRemesa}`)) return;
-  document.getElementById('modal-footer').innerHTML='<div style="color:var(--ink4);font-size:13px">⏳ Actualizando facturas en Holded...</div>';
+async function markPaid(transactions, debtorIBAN, fechaRemesa, concepto) {
+  if(!confirm(`¿Marcar ${transactions.length} factura(s) como PAGADAS en Holded?\n\nEsto registrará el pago con:\n• Cuenta: ${ibanShort(debtorIBAN)}\n• Fecha: ${fechaRemesa}\n• Concepto: ${concepto}\n\nEsta acción no se puede deshacer.`)) return;
+  document.getElementById('modal-footer').innerHTML='<div style="color:var(--ink4);font-size:13px">⏳ Marcando facturas como pagadas en Holded...</div>';
   try {
     const enriched=transactions.map(tx=>{const f=FACTURAS_ALL.find(x=>x.id===tx.invoiceId);return{...tx,sociedad:f?.sociedad||''};});
     const res=await fetch(`${API_BASE}/api/mark-paid`,{
@@ -1370,15 +1438,23 @@ async function markPaid(transactions,debtorIBAN,fechaRemesa,concepto) {
       body:JSON.stringify({transactions:enriched,debtorIBAN,fechaRemesa,concepto})
     });
     const json=await res.json();
-    const errs=json.results?.filter(r=>!r.ok)||[];
-    if(json.okCount>0) setBanner('success','✅',`<strong>${json.okCount} factura(s) marcadas como Pagadas en Holded.</strong>${errs.length>0?` ${errs.length} con errores.`:''}`);
+    const errs=(json.results||[]).filter(r=>!r.ok);
+
+    if(json.okCount>0) {
+      setBanner('success','✅',`<strong>${json.okCount} factura(s) marcadas como Pagadas en Holded.</strong>${errs.length>0?` ${errs.length} con errores.':''}`);
+    }
     selectedFacturas.clear();
     await loadFacturas(true);
+
+    const errDetail = errs.length > 0
+      ? `<div style="margin-top:8px;font-size:11px;color:var(--red)">${errs.map(e=>`❌ ${e.invoiceId}: ${e.error}`).join('<br>')}</div>`
+      : '';
     document.getElementById('modal-footer').innerHTML=`
-      <div style="color:var(--green);font-size:13px">✅ ${json.okCount} facturas actualizadas${errs.length>0?` · ${errs.length} errores`:''}</div>
+      <div style="color:var(--green);font-size:13px">✅ ${json.okCount} factura(s) actualizadas en Holded${errs.length>0?` · ${errs.length} errores`:''}</div>
+      ${errDetail}
       <button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
   } catch(err) {
-    document.getElementById('modal-footer').innerHTML=`<div style="color:var(--red);font-size:13px">Error: ${err.message}</div><button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
+    document.getElementById('modal-footer').innerHTML=`<div style="color:var(--red);font-size:13px">❌ ${err.message}</div><button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
   }
 }
 
