@@ -786,7 +786,7 @@ function renderSociedad(rows){
       if(i>0)rowsHtml+=`<div class="bank-row-divider"></div>`;
       // alert chip
       const facV=FACTURAS_ALL.filter(f=>f.sociedad===soc&&daysDiff(f.vencimiento)<0).reduce((s,f)=>s+(f.pendiente||0),0);
-      const alertHtml=facV>0?`<div class="alert-chip red" style="margin-top:2px">⚠ ${fmt(facV)} vencido</div>`:'';
+      const alertHtml=facV>0?'<div class="alert-chip red" style="margin-top:2px">⚠ '+fmt(facV)+' vencido</div>':'';
       rowsHtml+=`<div class="bank-row">
         ${bankLogoHtml(r.banco)}
         <div class="bank-info">
@@ -1210,7 +1210,7 @@ function renderFacturasTable() {
         <div style="width:11px;height:11px;border-radius:50%;background:${col}"></div>
         <div style="font-family:var(--font-display);font-size:17px;color:var(--ink)">${soc}</div>
         <div style="font-size:11px;color:var(--ink4)">${sfacts.length} factura${sfacts.length!==1?'s':''} · ${fmt(socTotal)}</div>
-        ${socSelTotal>0?`<div style="font-size:11px;color:var(--rust);margin-left:4px">· ${fmt(socSelTotal)} sel.</div>`:''}
+        '+(socSelTotal>0?'<div style="font-size:11px;color:var(--rust);margin-left:4px">· '+fmt(socSelTotal)+' sel.</div>':'')+'
         <button class="btn btn-outline btn-sm" style="margin-left:auto;padding:4px 10px" onclick="selAllSoc('${soc.replace(/'/g,"\'")}')">Sel. sociedad</button>
       </div>
       <div class="ftable-wrap"><div class="ftable-scroll"><table class="ftable">
@@ -1324,7 +1324,7 @@ function updateLiquidityCheck() {
   const cls=diff<0?'danger':diff<selTotal*0.15?'warn':'ok';
   const ic=diff<0?'🔴':diff<selTotal*0.15?'🟡':'🟢';
   const diffHtml=diff>=0
-    ?`Quedará <strong class="num" style="color:var(--green)">${fmt(diff)}</strong>`
+    ?'Quedará <strong class="num" style="color:var(--green)">'+fmt(diff)+'</strong>'
     :`<strong style="color:var(--red)">⚠ Insuficiente — faltan ${fmt(Math.abs(diff))}</strong>`;
   panel.innerHTML=`<div class="liq-alert ${cls}"><div class="liq-icon">${ic}</div>` +
     `<div class="liq-text"><strong>${acc.holdedName||acc.banco}:</strong> ` +
@@ -1414,7 +1414,7 @@ async function executeCreateSEPA() {
     document.getElementById('modal-body').innerHTML+=`
       <div style="margin-top:16px;padding:14px;background:rgba(42,122,86,0.08);border-radius:8px;border:1px solid rgba(42,122,86,0.2)">
         <div style="color:var(--green);font-size:13px;font-weight:500;margin-bottom:4px">✅ XML descargado — ${json.count} transacciones — ${fmt(json.total)}</div>
-        ${json.remesaId?`<div style="font-size:10.5px;color:var(--ink4)">ID Holded: ${json.remesaId}</div>`:'<div style="font-size:10.5px;color:var(--amber)">⚠ No se pudo registrar en Holded (no bloqueante)</div>'}
+        '+(json.remesaId?'<div style="font-size:10.5px;color:var(--ink4)">ID Holded: '+json.remesaId+'</div>':'<div style="font-size:10.5px;color:var(--amber)">⚠ No se pudo registrar en Holded (no bloqueante)</div>')+'
         <div style="font-size:11px;color:var(--ink4);margin-top:4px">Archivo guardado: remesa_SEPA_${fecha.split('/').join('-')}.xml</div>
       </div>`;
 
@@ -1441,7 +1441,7 @@ async function markPaid(transactions, debtorIBAN, fechaRemesa, concepto) {
     const errs=(json.results||[]).filter(r=>!r.ok);
 
     if(json.okCount>0) {
-      setBanner('success','✅',`<strong>${json.okCount} factura(s) marcadas como Pagadas en Holded.</strong>${errs.length>0?` ${errs.length} con errores.':''}`);
+      setBanner('success','✅','<strong>'+json.okCount+' factura(s) marcadas como Pagadas en Holded.</strong>'+(errs.length>0?' '+errs.length+' con errores.':''));
     }
     selectedFacturas.clear();
     await loadFacturas(true);
@@ -1450,7 +1450,7 @@ async function markPaid(transactions, debtorIBAN, fechaRemesa, concepto) {
       ? `<div style="margin-top:8px;font-size:11px;color:var(--red)">${errs.map(e=>`❌ ${e.invoiceId}: ${e.error}`).join('<br>')}</div>`
       : '';
     document.getElementById('modal-footer').innerHTML=`
-      <div style="color:var(--green);font-size:13px">✅ ${json.okCount} factura(s) actualizadas en Holded${errs.length>0?` · ${errs.length} errores`:''}</div>
+      <div style="color:var(--green);font-size:13px">✅ ${json.okCount} factura(s) actualizadas en Holded'+(errs.length>0?' · '+errs.length+' errores':'')+'</div>
       ${errDetail}
       <button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
   } catch(err) {
