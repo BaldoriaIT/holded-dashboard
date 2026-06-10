@@ -123,8 +123,14 @@ async function holdedGetAll(endpoint, key, maxPages=20) {
 // ─── Status label ─────────────────────────────────────────────────────
 // Holded expense status: 0=draft,1=pending,2=paid,3=partial,4=overdue,5=voided
 function expenseStatusLabel(code) {
+  // Holded documents API uses string status values
+  if (typeof code === 'string') {
+    const ms = { pending:'Pendiente', paid:'Pagado', overdue:'Vencida', partial:'Parcial', draft:'Borrador', voided:'Anulada' };
+    return ms[code] || code;
+  }
+  // Legacy numeric codes
   const m = {0:'Borrador',1:'Pendiente',2:'Pagado',3:'Parcial',4:'Vencida',5:'Anulada'};
-  return m[code] ?? `Estado ${code}`;
+  return m[code] ?? 'Estado '+code;
 }
 
 // ─── GET /api/health ──────────────────────────────────────────────────
@@ -133,31 +139,46 @@ app.get('/api/health', (req, res) => {
   res.json({ status:'ok', keysConfigured:envs.filter(e=>process.env[e]), keysMissing:envs.filter(e=>!process.env[e]), timestamp:new Date().toISOString() });
 });
 
-// ─── GET /api/debug/facturas  (diagnostic endpoint) ───────────────────
-// Hits Holded with ONE api key and returns raw response so we can see the real field names.
-// Usage: GET /api/debug/facturas?env=API_BALDORIA
+// ─── GET /api/debug/facturas ─────────────────────────────────────────
 app.get('/api/debug/facturas', async (req, res) => {
   const envName = req.query.env || 'API_BEATA_PASTA_GROUP';
   const k = apiKey(envName);
-  if (!k) return res.json({ error:`No key for ${envName}` });
-  try {
-    // Try all possible endpoints
-    const results = {};
-    for (const ep of [
-      '/invoicing/v1/expenses',
-      '/invoicing/v1/expenses?status=1',
-      '/invoicing/v1/expenses?status=4',
-      '/invoicing/v1/bills',
-      '/invoicing/v1/purchases',
-    ]) {
-      try {
-        const data = await holdedGet(`${ep}&page=1&limit=3`, k);
-        const sample = Array.isArray(data) ? data.slice(0,2) : (data?.items||data?.data||[data]).slice(0,2);
-        results[ep] = { count: Array.isArray(data)?data.length:(data?.total||'?'), sample };
-      } catch(e) { results[ep] = { error: e.message }; }
-    }
-    res.json({ envName, results });
-  } catch(err) { res.json({ error: err.message }); }
+  if (!k) return res.json({ error:'No API key for: '+envName });
+  const results = {};
+  // Correct Holded API: documents endpoint with docType=purchase
+  const endpoints = [
+    '/invoicing/v1/documents?docType=purchase&page=1&limit=5',
+    '/invoicing/v1/documents?docType=purchase&status=pending&page=1&limit=5',
+    '/invoicing/v1/documents?docType=purchaseorder&page=1&limit=5',
+    '/invoicing/v1/documents?docType=purchaserefund&page=1&limit=5',
+    '/invoicing/v1/expenses?page=1&limit=5',
+  ];
+  for (const ep of endpoints) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const r = await fetch('https://api.holded.com/api'+ep, {
+        signal: controller.signal,
+        headers: { key: k, 'Content-Type': 'application/json', Accept: 'application/json' }
+      });
+      clearTimeout(timer);
+      const text = await r.text();
+      const isHtml = text.trim().startsWith('<');
+      let parsed = null;
+      if (!isHtml) { try { parsed = JSON.parse(text); } catch(e) {} }
+      const items = Array.isArray(parsed) ? parsed : (parsed && parsed.items ? parsed.items : []);
+      const first = items[0] || null;
+      results[ep] = {
+        httpStatus: r.status,
+        isHtml,
+        itemCount: items.length,
+        firstItemKeys: first ? Object.keys(first) : [],
+        firstItemSample: first ? { id:first.id||first._id, status:first.status, date:first.date, dueDate:first.dueDate, due_date:first.due_date, expDate:first.expDate, total:first.total, amount:first.amount, paid:first.paid, docNumber:first.docNumber, num:first.num, contactName:first.contactName } : null,
+        rawPreview: isHtml ? text.substring(0,100) : text.substring(0,300),
+      };
+    } catch(e) { results[ep] = { error: e.message }; }
+  }
+  res.json({ envName, timestamp: new Date().toISOString(), results });
 });
 
 // ─── GET /api/balances ────────────────────────────────────────────────
@@ -204,36 +225,30 @@ app.get('/api/facturas', async (req, res) => {
       const soc = ACCOUNTS_MAP.find(a => a.apiKeyEnv === envName)?.sociedad || envName;
 
       try {
-        // Try all three unpaid statuses. Each may return [] if none exist.
-        // Holded v1 expenses: status 1=pending, 3=partial, 4=overdue
-        // Also try without status filter as fallback (returns all, we filter client side)
+        // Holded v1 API: purchase invoices are under /invoicing/v1/documents?docType=purchase
+        // NOT under /expenses (that returns HTML).
+        // Status values for documents: pending, paid, overdue, partial, draft
         let rawInvoices = [];
 
-        const tryEndpoints = [
-          '/invoicing/v1/expenses?status=1',
-          '/invoicing/v1/expenses?status=3',
-          '/invoicing/v1/expenses?status=4',
-        ];
+        const fetchResults = await Promise.allSettled([
+          holdedGetAll('/invoicing/v1/documents?docType=purchase&status=pending', k),
+          holdedGetAll('/invoicing/v1/documents?docType=purchase&status=overdue', k),
+          holdedGetAll('/invoicing/v1/documents?docType=purchase&status=partial', k),
+        ]);
 
-        const fetched = await Promise.allSettled(
-          tryEndpoints.map(ep => holdedGetAll(ep, k).catch(() => []))
-        );
-
-        fetched.forEach(r => {
+        fetchResults.forEach(r => {
           if (r.status === 'fulfilled' && Array.isArray(r.value)) {
             rawInvoices = rawInvoices.concat(r.value);
           }
         });
 
-        // If nothing came back, try without status filter (some Holded configs differ)
+        // Fallback: get all purchases without status filter
         if (rawInvoices.length === 0) {
           try {
-            const all = await holdedGetAll('/invoicing/v1/expenses', k);
-            rawInvoices = all.filter(inv => {
-              const s = inv.status;
-              return s === 1 || s === 3 || s === 4;
-            });
-          } catch(e) { /* ignore */ }
+            const all = await holdedGetAll('/invoicing/v1/documents?docType=purchase', k);
+            // Filter out fully paid
+            rawInvoices = all.filter(inv => inv.status !== 'paid' && inv.status !== 2);
+          } catch(e) { console.error('fallback purchase fetch:', e.message); }
         }
 
         const seen = new Set();
@@ -243,47 +258,40 @@ app.get('/api/facturas', async (req, res) => {
           seen.add(id);
 
           // Calculate pending amount
-          const totalAmt   = parseFloat(inv.total ?? inv.amount ?? inv.subtotal ?? 0);
-          const paidAmt    = parseFloat(inv.paid  ?? inv.amountPaid ?? inv.paidAmount ?? 0);
+          // Holded documents API: total is invoice total, paid is amount already paid
+          const totalAmt   = parseFloat(inv.total ?? inv.subtotal ?? inv.amount ?? 0);
+          const paidAmt    = parseFloat(inv.paid  ?? inv.paidAmount ?? inv.amountPaid ?? 0);
           const pendingAmt = Math.max(0, totalAmt - paidAmt);
-          // Include even if pendiente=0 so user can see all invoices; filter in UI
-          // But skip fully paid and void
-          if (inv.status === 2 || inv.status === 5) continue;
+          // Skip fully paid and voided
+          if (inv.status === 'paid' || inv.status === 2 || inv.status === 5 || inv.status === 'voided') continue;
 
           // Date fields — Holded uses Unix timestamps
-          const fechaEmisionDate = tsToDate(inv.date ?? inv.created ?? inv.createdAt);
+          const fechaEmisionDate = tsToDate(inv.date ?? inv.created ?? inv.createdAt ?? inv.createdDate);
           const vencimientoDate  = tsToDate(inv.dueDate ?? inv.due_date ?? inv.expDate ?? inv.expirationDate);
 
           // Forma de pago
+          // Holded documents API field names
           const formaPago = inv.paymentMethodInfo?.name
             || inv.paymentMethod?.name
             || inv.paymentMethodName
-            || inv.payMethod
-            || inv.fpago
-            || '';
+            || inv.payMethod || inv.fpago || '';
 
-          // Proyecto
-          const proyecto = inv.projectInfo?.name
-            || inv.project?.name
-            || inv.projectName
-            || inv.project
-            || inv.tag
-            || '';
+          const proyecto = inv.projectName
+            || inv.project?.name || inv.project
+            || inv.tag || inv.tagName || '';
 
-          // Cuenta contable
-          const cuenta = inv.accountInfo?.name
-            || inv.account?.name
-            || inv.accountName
-            || inv.ledgerAccount
-            || inv.category
-            || '';
+          const cuenta = inv.accountName
+            || inv.account?.name || inv.ledgerAccount
+            || inv.category || '';
 
-          // Contact IBAN for SEPA
           const contactIBAN = inv.contactInfo?.iban
-            || inv.contact?.iban
-            || inv.iban
-            || inv.bankIban
-            || '';
+            || inv.contact?.iban || inv.iban
+            || inv.bankIban || inv.creditorIban || '';
+
+          // Holded documents use string status
+          const statusCode = inv.status; // 'pending','overdue','partial','paid','draft'
+          const statusCodeNum = typeof inv.status === 'number' ? inv.status :
+            ({pending:1, overdue:4, partial:3, paid:2, draft:0}[inv.status] ?? 1);
 
           allFacturas.push({
             id,
@@ -292,9 +300,9 @@ app.get('/api/facturas', async (req, res) => {
             apiKeyEnv:    envName,
             // The 9 display columns
             fechaEmision: isoDate(fechaEmisionDate),
-            vencimiento:  isoDate(vencimientoDate),
-            num:          inv.docNumber || inv.num || inv.number || inv.ref || '',
-            proveedor:    inv.contactName || inv.contact?.name || inv.contactInfo?.name || '',
+            vencimiento:  isoDate(vencimientoDate) || isoDate(tsToDate(inv.duedate || inv.due || inv.expDate)),
+            num:          inv.docNumber || inv.docNum || inv.num || inv.number || inv.ref || '',
+            proveedor:    inv.contactName || inv.contact?.name || inv.contactInfo?.name || inv.name || '',
             proyecto,
             cuenta,
             formaPago,
@@ -302,7 +310,7 @@ app.get('/api/facturas', async (req, res) => {
             totalAmount:  totalAmt,
             paidAmount:   paidAmt,
             estado:       expenseStatusLabel(inv.status),
-            estadoCode:   inv.status ?? 1,
+            estadoCode:   statusCodeNum,
             // Extra for SEPA
             currency:     inv.currency || 'EUR',
             contactIBAN,
@@ -485,7 +493,8 @@ app.post('/api/mark-paid', async (req, res) => {
           .find(a=>(a.iban||'').replace(/\s/g,'')=== debtorIBAN.replace(/\s/g,''));
 
         // POST /invoicing/v1/expenses/{id}/pay — registers payment on the invoice
-        await holdedPost(`/invoicing/v1/expenses/${tx.invoiceId}/pay`, k, {
+        // Holded documents API: pay endpoint for purchase documents
+        await holdedPost(`/invoicing/v1/documents/${tx.invoiceId}/pay`, k, {
           date:      execTs,
           amount:    tx.amount,
           accountId: tAcc?.id || '',
