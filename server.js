@@ -311,7 +311,6 @@ app.get('/api/balances', async (req, res) => {
 });
 
 // ─── GET /api/facturas ────────────────────────────────────────────────
-// Fetches unpaid purchases using v2 /purchases
 app.get('/api/facturas', async (req, res) => {
   try {
     const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
@@ -323,22 +322,34 @@ app.get('/api/facturas', async (req, res) => {
       if (!k) return;
       const soc = ACCOUNTS_MAP.find(a => a.apiKeyEnv === envName)?.sociedad || envName;
       try {
-        let rawInvoices = [];
-        // Fetch pending + overdue + partial
-        const fetchResults = await Promise.allSettled([
+        // Fetch invoices + lookup tables in parallel
+        const [pendingRes, overdueRes, partialRes, accountsRes, payMethodsRes] = await Promise.allSettled([
           v2GetAll('/purchases?status=pending', k),
           v2GetAll('/purchases?status=overdue', k),
           v2GetAll('/purchases?status=partial', k),
+          v2GetAll('/accounting/expense-accounts', k).catch(() => v2GetAll('/expenses-accounts', k).catch(() => [])),
+          v2GetAll('/payment-methods', k).catch(() => []),
         ]);
-        fetchResults.forEach(r => {
+
+        let rawInvoices = [];
+        [pendingRes, overdueRes, partialRes].forEach(r => {
           if (r.status==='fulfilled' && Array.isArray(r.value)) rawInvoices = rawInvoices.concat(r.value);
         });
-        // Fallback: all purchases
         if (rawInvoices.length === 0) {
           try {
             const all = await v2GetAll('/purchases', k);
-            rawInvoices = all.filter(inv => !['paid','voided'].includes(inv.status) && inv.status !== 2 && inv.status !== 5);
+            rawInvoices = all.filter(inv => !['paid','voided'].includes(inv.status));
           } catch(e) { errors.push({env:envName, soc, error:'fallback: '+e.message}); }
+        }
+
+        // Build lookup maps for account names and payment method names
+        const accountMap = {};
+        if (accountsRes.status==='fulfilled' && Array.isArray(accountsRes.value)) {
+          accountsRes.value.forEach(a => { if (a.id) accountMap[a.id] = a.name || a.id; });
+        }
+        const payMethodMap = {};
+        if (payMethodsRes.status==='fulfilled' && Array.isArray(payMethodsRes.value)) {
+          payMethodsRes.value.forEach(p => { if (p.id) payMethodMap[p.id] = p.name || p.id; });
         }
 
         const seen = new Set();
@@ -367,10 +378,13 @@ app.get('/api/facturas', async (req, res) => {
           pendingAmt = Math.max(0, pendingAmt);
           paidAmt    = Math.max(0, paidAmt);
 
-          // Holded v2 field names (confirmed from API response):
-          // document_number, contact_name, due_date, payments_pending, payments_total
-          const lineAccount = (inv.lines && inv.lines[0]) ? (inv.lines[0].account || '') : '';
-          const lineProject = (inv.lines && inv.lines[0]) ? (inv.lines[0].project_id || '') : '';
+          // Resolve names from lookup maps
+          const lineAccountId = (inv.lines && inv.lines[0]) ? (inv.lines[0].account || '') : '';
+          const lineProjectId = (inv.lines && inv.lines[0]) ? (inv.lines[0].project_id || '') : '';
+          const cuentaName    = accountMap[lineAccountId] || lineAccountId || '';
+          const payMethodName = payMethodMap[inv.payment_method_id] || inv.payment_method_id || '';
+          // Project: v2 doesn't return project name in list — show ID for now
+          const proyectoName  = lineProjectId || '';
 
           // Auto-fix status: if payments_pending == total, it's really "pending" not "partial"
           let displayStatus = inv.status;
@@ -388,10 +402,10 @@ app.get('/api/facturas', async (req, res) => {
             vencimiento:  isoDate(parseDate(inv.due_date ?? inv.dueDate ?? inv.expDate)),
             num:          inv.document_number || inv.docNumber || inv.number || inv.ref || '',
             proveedor:    inv.contact_name || inv.contactName || inv.contact?.name || '',
-            proyecto:     lineProject || inv.projectName || inv.project || '',
-            cuenta:       lineAccount || inv.accountName || '',
-            cuentaId:     lineAccount || inv.accountId || '',
-            formaPago:    inv.payment_method_id || inv.paymentMethodId || inv.paymentMethod || '',
+            proyecto:     proyectoName,
+            cuenta:       cuentaName,
+            cuentaId:     lineAccountId,
+            formaPago:    payMethodName,
             pendiente:    pendingAmt,
             totalAmount:  totalAmt,
             paidAmount:   paidAmt,
@@ -523,7 +537,7 @@ app.post('/api/create-remesa', async (req, res) => {
     // Register in Holded (non-fatal)
     let holdedRemesaId = null;
     try {
-      const bankAccounts = await v2GetAll('/banking-accounts', k);
+      const kV1cr = apiKeyV1ForSoc(sociedad); let bankAccounts = []; if(kV1cr){try{const tr=await v1Get('/invoicing/v1/treasury',kV1cr);bankAccounts=Array.isArray(tr)?tr:[];}catch(e){}}
       const tAcc = bankAccounts.find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
       const payload = {
         name:concepto, concept:concepto, accountId:tAcc?.id||'',
@@ -551,18 +565,27 @@ app.post('/api/mark-paid', async (req, res) => {
     const execTs = Math.floor(execDateObj.getTime()/1000);
     const results = [];
     for (const tx of transactions) {
+      const envName = SOC_API[tx.sociedad] || '';
       const k = apiKeyForSoc(tx.sociedad);
       if (!k) { results.push({invoiceId:tx.invoiceId,ok:false,error:'Sin API key'}); continue; }
       try {
-        const bankAccounts = await v2GetAll('/banking-accounts', k);
-        const tAcc = bankAccounts.find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
+        // Use v1 treasury to get bank account ID (v2 /banking-accounts not yet in production)
+        const kV1 = apiKeyV1(envName);
+        let bankAccountId = '';
+        if (kV1) {
+          try {
+            const treasury = await v1Get('/invoicing/v1/treasury', kV1);
+            const tAcc = (Array.isArray(treasury)?treasury:[]).find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
+            bankAccountId = tAcc?.id || '';
+          } catch(e) {}
+        }
         // v2 endpoint: POST /purchases/{id}/payments
-        await v2Post(`/purchases/${tx.invoiceId}/payments`, k, {
-          date: execTs,
+        await v2Post('/purchases/'+tx.invoiceId+'/payments', k, {
+          date: isoDate(execDateObj),
           amount: tx.amount,
-          bankingAccountId: tAcc?.id || '',
+          banking_account_id: bankAccountId,
           concept: concepto || 'Pago remesa SEPA',
-          notes: `Cuenta: ${debtorIBAN} | Fecha: ${isoDate(execDateObj)}`,
+          notes: 'Cuenta: '+debtorIBAN+' | Fecha: '+isoDate(execDateObj),
         });
         results.push({invoiceId:tx.invoiceId, ok:true});
       } catch(e) {
