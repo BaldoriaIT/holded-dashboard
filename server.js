@@ -176,15 +176,20 @@ app.get('/api/debug/facturas',async(req,res)=>{
   if(!k) return res.json({error:'No v2 key for: '+envName});
   const results={};
   // Test all lookup endpoints + 1 purchase sample
+  // Test v1 paths (via kV1) for lookups since v2 returns 403/404
+  const kV1d = apiKeyV1(envName);
+  const v1Results = {};
+  for(const ep1 of ['/invoicing/v1/expenseaccounts','/invoicing/v1/paymentmethods','/projects/v1/projects','/accounting/v1/expenseaccounts']) {
+    try{
+      const r1=await fetch('https://api.holded.com/api'+ep1+'?limit=5',{headers:{key:kV1d,'Accept':'application/json'},signal:AbortSignal.timeout(6000)});
+      const t1=await r1.text();
+      let p1=null;try{p1=JSON.parse(t1);}catch(e){}
+      const items1=Array.isArray(p1)?p1:(p1&&(p1.items||p1.data)||[]);
+      v1Results[ep1]={status:r1.status,isJson:p1!==null,itemCount:Array.isArray(items1)?items1.length:0,firstItem:Array.isArray(items1)?(items1[0]||null):null};
+    }catch(e){v1Results[ep1]={error:e.message};}
+  }
   const endpoints=[
     '/purchases?limit=1',
-    '/accounting/expense-accounts?limit=5',
-    '/expense-accounts?limit=5',
-    '/accounting/expenses-accounts?limit=5',
-    '/payment-methods?limit=10',
-    '/invoicing/payment-methods?limit=10',
-    '/projects?limit=10',
-    '/invoicing/projects?limit=10',
   ];
   for(const ep of endpoints){
     try{
@@ -206,7 +211,7 @@ app.get('/api/debug/facturas',async(req,res)=>{
       };
     }catch(e){results[ep]={error:e.message};}
   }
-  res.json({envName,apiVersion:'v2',timestamp:new Date().toISOString(),results});
+  res.json({envName,apiVersion:'v2+v1',timestamp:new Date().toISOString(),v2results:results,v1results:v1Results});
 });
 
 
@@ -276,17 +281,18 @@ app.get('/api/facturas',async(req,res)=>{
       if(!k) return;
       const soc=ACCOUNTS_MAP.find(a=>a.apiKeyEnv===envName)?.sociedad||envName;
       try{
-        // Fetch purchases + lookup tables in parallel
+        // Fetch purchases (v2) + lookup tables (v1 — v2 endpoints return 403/404)
+        const kV1lookup = apiKeyV1(envName);
         const [pendRes,ovrRes,parRes,acctRes,pmRes,projRes]=await Promise.allSettled([
           v2GetAll('/purchases?status=pending',k),
           v2GetAll('/purchases?status=overdue',k),
           v2GetAll('/purchases?status=partial',k),
-          // Expense accounts for cuenta names
-          v2GetAll('/accounting/expense-accounts',k).catch(()=>v2GetAll('/expense-accounts',k).catch(()=>[])),
-          // Payment methods for forma de pago names
-          v2GetAll('/payment-methods',k).catch(()=>[]),
-          // Projects for project names
-          v2GetAll('/projects',k).catch(()=>[]),
+          // Expense accounts — v1 works, v2 returns 404
+          kV1lookup ? v1GetAll('/invoicing/v1/expenseaccounts',kV1lookup).catch(()=>v1GetAll('/accounting/v1/expenseaccounts',kV1lookup).catch(()=>[])) : Promise.resolve([]),
+          // Payment methods — v1 works, v2 returns 403
+          kV1lookup ? v1GetAll('/invoicing/v1/paymentmethods',kV1lookup).catch(()=>[]) : Promise.resolve([]),
+          // Projects — v1 works, v2 returns 403
+          kV1lookup ? v1GetAll('/projects/v1/projects',kV1lookup).catch(()=>[]) : Promise.resolve([]),
         ]);
 
         let rawInvoices=[];
