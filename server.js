@@ -68,8 +68,14 @@ const SOC_API = {};
 ACCOUNTS_MAP.forEach(a => { SOC_API[a.sociedad] = a.apiKeyEnv; });
 
 // ─── Helpers ──────────────────────────────────────────────────────────
-function apiKey(envName)   { return process.env[envName] || null; }
-function apiKeyForSoc(soc) { const e = SOC_API[soc]; return e ? apiKey(e) : null; }
+// apiKey()    → returns the v2 Bearer token (for purchases)
+// apiKeyV1()  → returns the v1 key (for treasury/saldos)
+//               looks for API_XXX_V1 first, falls back to API_XXX if not found
+//               (fallback allows using same v1 key in both slots during migration)
+function apiKey(envName)    { return process.env[envName] || null; }
+function apiKeyV1(envName)  { return process.env[envName+'_V1'] || process.env[envName] || null; }
+function apiKeyForSoc(soc)  { const e = SOC_API[soc]; return e ? apiKey(e)   : null; }
+function apiKeyV1ForSoc(soc){ const e = SOC_API[soc]; return e ? apiKeyV1(e) : null; }
 function escapeXml(s) {
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -85,6 +91,46 @@ function parseDate(v) {
   // ISO string
   const d = new Date(v);
   return isNaN(d) ? null : d;
+}
+
+// ─── Holded API v1 fetch (treasury/balances) ─────────────────────────
+// v1 uses: key: <token>  —  base: https://api.holded.com/api
+async function holdedV1Fetch(method, endpoint, token, body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const opts = {
+      method,
+      signal: controller.signal,
+      headers: { 'key': token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch('https://api.holded.com/api' + endpoint, opts);
+    clearTimeout(timer);
+    const text = await r.text();
+    if (!text || text.trim() === '') return null;
+    if (text.trim().startsWith('<')) throw new Error('Holded v1 HTML ('+r.status+'): '+endpoint);
+    const json = JSON.parse(text);
+    if (!r.ok) throw new Error('Holded v1 '+r.status+': '+JSON.stringify(json).substring(0,200));
+    return json;
+  } catch(err) { clearTimeout(timer); throw err; }
+}
+const v1Get  = (ep, k)    => holdedV1Fetch('GET',  ep, k, null);
+const v1Post = (ep, k, b) => holdedV1Fetch('POST', ep, k, b);
+
+async function v1GetAll(endpoint, token, maxPages=20) {
+  let page=1, results=[];
+  while (page <= maxPages) {
+    const sep = endpoint.includes('?') ? '&' : '?';
+    const data = await v1Get(endpoint+sep+'page='+page+'&limit=100', token);
+    if (!data) break;
+    const items = Array.isArray(data) ? data : (data.items||data.data||[]);
+    if (!items.length) break;
+    results = results.concat(items);
+    if (items.length < 100) break;
+    page++;
+  }
+  return results;
 }
 
 // ─── Holded API v2 fetch ───────────────────────────────────────────────
@@ -231,8 +277,9 @@ app.get('/api/debug/balances', async (req, res) => {
     const k = apiKey(envName);
     if (!k) return;
     try {
-      const data = await v2GetAll('/banking-accounts', k);
-      data.forEach(acc => allAccounts.push({ envName, id: acc.id, name: acc.name, iban: acc.iban, balance: acc.balance }));
+      const data = await v1Get('/invoicing/v1/treasury', k);
+      const accs = Array.isArray(data) ? data : [];
+      accs.forEach(acc => allAccounts.push({ envName, id: acc.id, name: acc.name, iban: acc.iban, balance: acc.balance }));
     } catch(e) {
       allAccounts.push({ envName, error: e.message });
     }
@@ -241,33 +288,34 @@ app.get('/api/debug/balances', async (req, res) => {
 });
 
 // ─── GET /api/balances ────────────────────────────────────────────────
+// Uses v1 API (key: header) for treasury — v2 /banking-accounts not yet in production
 app.get('/api/balances', async (req, res) => {
   try {
     const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
     const results = await Promise.allSettled(
       envs.map(async envName => {
-        const k = apiKey(envName);
-        if (!k) return { envName, accounts:[], error:'no key' };
+        const k = apiKeyV1(envName);
+        if (!k) return { envName, accounts:[] };
         try {
-          const data = await v2GetAll('/banking-accounts', k);
+          const data = await v1Get('/invoicing/v1/treasury', k);
           return { envName, accounts: Array.isArray(data) ? data : [] };
         } catch(e) {
-          console.error('balances', envName, e.message);
+          console.error('balances v1', envName, e.message);
           return { envName, accounts:[], error: e.message };
         }
       })
     );
 
-    const lookupByIban = {};
     const lookupByName = {};
+    const lookupByIban = {};
     const allAccounts  = [];
 
     results.forEach(r => {
       if (r.status==='fulfilled' && r.value && r.value.accounts) {
         r.value.accounts.forEach(acc => {
           allAccounts.push({ envName: r.value.envName, name: acc.name, iban: acc.iban, balance: acc.balance });
-          if (acc.iban) lookupByIban[acc.iban.replace(/[\s-]/g,'').toUpperCase()] = acc.balance ?? 0;
           if (acc.name) lookupByName[acc.name.toUpperCase().trim()] = acc.balance ?? 0;
+          if (acc.iban) lookupByIban[acc.iban.replace(/[\s-]/g,'').toUpperCase()] = acc.balance ?? 0;
         });
       }
     });
@@ -275,8 +323,8 @@ app.get('/api/balances', async (req, res) => {
     const data = ACCOUNTS_MAP.map(a => {
       const cleanIban = a.iban.replace(/[\s-]/g,'').toUpperCase();
       let saldo = null, matchedBy = null;
-      if (lookupByIban[cleanIban] !== undefined) { saldo = lookupByIban[cleanIban]; matchedBy = 'iban'; }
-      else if (lookupByName[a.holdedName.toUpperCase()] !== undefined) { saldo = lookupByName[a.holdedName.toUpperCase()]; matchedBy = 'name'; }
+      if (lookupByName[a.holdedName.toUpperCase()] !== undefined) { saldo = lookupByName[a.holdedName.toUpperCase()]; matchedBy = 'name'; }
+      else if (lookupByIban[cleanIban] !== undefined) { saldo = lookupByIban[cleanIban]; matchedBy = 'iban'; }
       return { banco:a.banco, sociedad:a.sociedad, restaurante:a.restaurante, iban:a.iban, color:a.color, holdedName:a.holdedName, saldo, matchedBy };
     });
 
@@ -332,8 +380,21 @@ app.get('/api/facturas', async (req, res) => {
           if (['paid','voided'].includes(inv.status) || inv.status===2 || inv.status===5) continue;
 
           const totalAmt   = parseFloat(inv.total ?? inv.subtotal ?? inv.amount ?? 0);
-          const paidAmt    = parseFloat(inv.paid  ?? inv.paidAmount ?? inv.amountPaid ?? 0);
-          const pendingAmt = Math.max(0, totalAmt - paidAmt);
+          // Holded v2 purchases: pending amount is in 'pending', 'outstandingAmount', or 'amountPending'
+          // If a direct pending field exists, use it; otherwise derive from total - paid
+          let pendingAmt;
+          if (inv.pending !== undefined && inv.pending !== null)
+            pendingAmt = parseFloat(inv.pending);
+          else if (inv.outstandingAmount !== undefined && inv.outstandingAmount !== null)
+            pendingAmt = parseFloat(inv.outstandingAmount);
+          else if (inv.amountPending !== undefined && inv.amountPending !== null)
+            pendingAmt = parseFloat(inv.amountPending);
+          else {
+            const paidAmt = parseFloat(inv.paid ?? inv.paidAmount ?? inv.amountPaid ?? inv.paidTotal ?? 0);
+            pendingAmt = Math.max(0, totalAmt - paidAmt);
+          }
+          pendingAmt = Math.max(0, pendingAmt);
+          const paidAmt = Math.max(0, totalAmt - pendingAmt);
 
           allFacturas.push({
             id, holdedId:id, sociedad:soc, apiKeyEnv:envName,
@@ -348,8 +409,9 @@ app.get('/api/facturas', async (req, res) => {
             pendiente:    pendingAmt,
             totalAmount:  totalAmt,
             paidAmount:   paidAmt,
-            estado:       purchaseStatusLabel(inv.status),
-            estadoCode:   purchaseStatusCode(inv.status),
+            // Auto-override status based on amounts
+            estado:       (pendingAmt <= 0.01 && totalAmt > 0) ? 'Pagado' : purchaseStatusLabel(inv.status),
+            estadoCode:   (pendingAmt <= 0.01 && totalAmt > 0) ? 2 : purchaseStatusCode(inv.status),
             currency:     inv.currency || 'EUR',
             contactIBAN:  inv.contactIban || inv.contact?.iban || inv.iban || inv.bankIban || '',
             contactId:    inv.contactId || inv.contact?.id || '',
