@@ -1168,11 +1168,22 @@ function setEstadoFilter(f, btn) {
   applyFacturaFilters();
 }
 
+// Track collapsed state per sociedad
+const socCollapsed = {};
+
+function toggleSocCollapse(socKey) {
+  socCollapsed[socKey] = !socCollapsed[socKey];
+  const body = document.getElementById('soc-body-'+socKey);
+  const arrow = document.getElementById('soc-arrow-'+socKey);
+  if (body) body.style.display = socCollapsed[socKey] ? 'none' : 'block';
+  if (arrow) arrow.textContent = socCollapsed[socKey] ? '▶' : '▼';
+}
+
 function renderFacturasTable() {
   const facts = FACTURAS_FILTERED;
   const totalAmt = facts.reduce((s,f)=>s+(f.pendiente||0),0);
   const countEl = document.getElementById('total-count');
-  if (countEl) countEl.textContent = `${facts.length} factura${facts.length!==1?'s':''} · ${fmt(totalAmt)}`;
+  if (countEl) countEl.textContent = facts.length + ' factura' + (facts.length!==1?'s':'') + ' · ' + fmt(totalAmt);
 
   if (FACTURAS_ALL.length === 0) {
     document.getElementById('facturas-content').innerHTML =
@@ -1202,59 +1213,75 @@ function renderFacturasTable() {
   let html = '';
   Object.entries(grouped).sort(([a],[b])=>a.localeCompare(b)).forEach(([soc, sfacts]) => {
     const col = SOC_COLORS[soc] || '#888';
-    const socTotal = sfacts.reduce((s,f)=>s+(f.pendiente||0),0);
+    const socTotal    = sfacts.reduce((s,f)=>s+(f.pendiente||0),0);
     const socSelTotal = sfacts.filter(f=>selectedFacturas.has(f.id)).reduce((s,f)=>s+(f.pendiente||0),0);
+    const safeSoc     = soc.replace(/[^a-zA-Z0-9]/g,'_');
+    const isCollapsed = !!socCollapsed[safeSoc];
+    const selHtml     = socSelTotal > 0 ? '<span style="font-size:11px;color:var(--rust);margin-left:6px">· ' + fmt(socSelTotal) + ' seleccionado</span>' : '';
 
-    html += `<div style="margin-bottom:24px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <div style="width:11px;height:11px;border-radius:50%;background:${col}"></div>
-        <div style="font-family:var(--font-display);font-size:17px;color:var(--ink)">${soc}</div>
-        <div style="font-size:11px;color:var(--ink4)">${sfacts.length} factura${sfacts.length!==1?'s':''} · ${fmt(socTotal)}</div>
-        '+(socSelTotal>0?'<div style="font-size:11px;color:var(--rust);margin-left:4px">· '+fmt(socSelTotal)+' sel.</div>':'')+'
-        <button class="btn btn-outline btn-sm" style="margin-left:auto;padding:4px 10px" onclick="selAllSoc('${soc.replace(/'/g,"\'")}')">Sel. sociedad</button>
-      </div>
-      <div class="ftable-wrap"><div class="ftable-scroll"><table class="ftable">
-        <thead><tr>
-          <th style="width:32px"><input type="checkbox" class="ftable-check" onchange="toggleSocAll('${soc.replace(/'/g,"\'")}',this.checked)" title="Seleccionar toda la sociedad"></th>
-          <th>F. Emisión</th>
-          <th>Vencimiento</th>
-          <th>Nº Factura</th>
-          <th>Proveedor</th>
-          <th>Proyecto</th>
-          <th>Cuenta</th>
-          <th>F. Pago</th>
-          <th class="num-col">Pendiente</th>
-          <th>Estado</th>
-        </tr></thead>
-        <tbody>`;
+    html += '<div style="margin-bottom:16px">' +
+      // ── Header row ──
+      '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:white;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;margin-bottom:4px;box-shadow:var(--shadow)" onclick="toggleSocCollapse(\''+safeSoc+'\')">' +
+        '<span id="soc-arrow-'+safeSoc+'" style="font-size:11px;color:var(--ink4);width:12px;flex-shrink:0">'+(isCollapsed?'▶':'▼')+'</span>' +
+        '<div style="width:10px;height:10px;border-radius:50%;background:'+col+';flex-shrink:0"></div>' +
+        '<div style="font-family:var(--font-display);font-size:17px;color:var(--ink);font-weight:400">'+soc+'</div>' +
+        '<div style="font-size:11px;color:var(--ink4)">'+sfacts.length+' factura'+(sfacts.length!==1?'s':'')+' &nbsp;·&nbsp; <span class="num">'+fmt(socTotal)+'</span></div>' +
+        selHtml +
+        '<div style="margin-left:auto;display:flex;gap:6px">' +
+          '<button class="btn btn-outline btn-sm" style="padding:3px 9px;font-size:10.5px" onclick="event.stopPropagation();selAllSoc(\''+soc.replace(/'/g,"\\'")+'\')" title="Seleccionar todas las facturas de esta sociedad">☑ Todas</button>' +
+        '</div>' +
+      '</div>' +
+      // ── Table body (collapsible) ──
+      '<div id="soc-body-'+safeSoc+'" style="display:'+(isCollapsed?'none':'block')+'">' +
+      '<div class="ftable-wrap"><div class="ftable-scroll"><table class="ftable">' +
+        '<thead><tr>' +
+          '<th style="width:32px"><input type="checkbox" class="ftable-check" onchange="toggleSocAll(\''+soc.replace(/'/g,"\\'")+'\',this.checked)" title="Sel. toda la sociedad"></th>' +
+          '<th>F. Emisión</th>' +
+          '<th>Vencimiento</th>' +
+          '<th>Nº Factura</th>' +
+          '<th>Proveedor</th>' +
+          '<th>Proyecto</th>' +
+          '<th>Cuenta</th>' +
+          '<th>F. Pago</th>' +
+          '<th class="num-col">Pendiente</th>' +
+          '<th>Estado</th>' +
+        '</tr></thead>' +
+        '<tbody>';
 
     sfacts.sort((a,b)=>(a.vencimiento||'9999').localeCompare(b.vencimiento||'9999')).forEach(f => {
       const days   = daysDiff(f.vencimiento);
       const rowCls = days < 0 ? 'vencida' : (days <= 7 ? 'proxima' : '');
       const isSel  = selectedFacturas.has(f.id);
+
+      // Days badge — only show if vencimiento exists and relevant
       let diasHtml = '';
-      if      (days < 0)   diasHtml = `<span class="dias-badge red" title="${Math.abs(days)} días de retraso">${Math.abs(days)}d</span>`;
-      else if (days <= 7)  diasHtml = `<span class="dias-badge amber" title="Vence en ${days} días">${days}d</span>`;
-      else if (days <= 30) diasHtml = `<span class="dias-badge green" title="Vence en ${days} días">${days}d</span>`;
+      if (f.vencimiento) {
+        if      (days < 0)   diasHtml = '<span class="dias-badge red" title="'+Math.abs(days)+' días vencida">'+Math.abs(days)+'d</span>';
+        else if (days <= 7)  diasHtml = '<span class="dias-badge amber" title="Vence en '+days+' días">'+days+'d</span>';
+        else if (days <= 30) diasHtml = '<span class="dias-badge green" title="Vence en '+days+' días">'+days+'d</span>';
+      }
 
-      const estadoCls = {1:'estado-pendiente',2:'estado-pagado',3:'estado-parcial',4:'estado-vencida'}[f.estadoCode] || 'estado-pendiente';
-      const safeId = (f.id||'').replace(/'/g,"\'");
+      const estadoCls = ({1:'estado-pendiente',2:'estado-pagado',3:'estado-parcial',4:'estado-vencida'})[f.estadoCode] || 'estado-pendiente';
+      const safeId    = (f.id||'').replace(/'/g,"\\'");
+      const fechaEm   = f.fechaEmision ? new Date(f.fechaEmision+'T00:00:00').toLocaleDateString('es-ES') : '—';
+      const fechaVenc = f.vencimiento  ? new Date(f.vencimiento+'T00:00:00').toLocaleDateString('es-ES')  : '—';
 
-      html += `<tr class="${rowCls}${isSel?' selected':''}" id="frow-${f.id}">
-        <td><input type="checkbox" class="ftable-check" ${isSel?'checked':''} onchange="toggleF('${safeId}',this.checked)"></td>
-        <td style="white-space:nowrap">${f.fechaEmision ? new Date(f.fechaEmision+'T00:00:00').toLocaleDateString('es-ES') : '—'}</td>
-        <td style="white-space:nowrap">${f.vencimiento ? new Date(f.vencimiento+'T00:00:00').toLocaleDateString('es-ES') : '—'} ${diasHtml}</td>
-        <td style="font-family:var(--font-mono);font-size:10.5px;color:var(--ink2)">${escapeHtml(f.num||'—')}</td>
-        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(f.proveedor||'')}">${escapeHtml(f.proveedor||'—')}</td>
-        <td style="font-size:11px;color:var(--ink4);max-width:100px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(f.proyecto||'—')}</td>
-        <td style="font-size:10.5px;color:var(--ink4);max-width:100px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(f.cuenta||'—')}</td>
-        <td style="font-size:11px;color:var(--ink4)">${escapeHtml(f.formaPago||'—')}</td>
-        <td class="num-col" style="font-weight:${days<0?600:400};color:${days<0?'var(--red)':'inherit'}">${fmt(f.pendiente)}</td>
-        <td><span class="estado-badge ${estadoCls}">${f.estado}</span></td>
-      </tr>`;
+      html +=
+        '<tr class="'+rowCls+(isSel?' selected':'')+'" id="frow-'+f.id+'">' +
+          '<td><input type="checkbox" class="ftable-check" '+(isSel?'checked':'')+' onchange="toggleF(\''+safeId+'\',this.checked)"></td>' +
+          '<td style="white-space:nowrap;font-size:12px">'+fechaEm+'</td>' +
+          '<td style="white-space:nowrap;font-size:12px">'+fechaVenc+(diasHtml?' '+diasHtml:'')+'</td>' +
+          '<td style="font-family:var(--font-mono);font-size:10.5px;color:var(--ink2)">'+escapeHtml(f.num||'—')+'</td>' +
+          '<td style="max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escapeHtml(f.proveedor||'')+'">'+escapeHtml(f.proveedor||'—')+'</td>' +
+          '<td style="font-size:11px;color:var(--ink4);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escapeHtml(f.proyecto||'')+'">'+escapeHtml(f.proyecto||'—')+'</td>' +
+          '<td style="font-size:10.5px;color:var(--ink4);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escapeHtml(f.cuenta||'')+'">'+escapeHtml(f.cuenta||'—')+'</td>' +
+          '<td style="font-size:11px;color:var(--ink4);white-space:nowrap">'+escapeHtml(f.formaPago||'—')+'</td>' +
+          '<td class="num-col" style="font-weight:'+(days<0?600:400)+';color:'+(days<0?'var(--red)':'inherit')+'">'+fmt(f.pendiente)+'</td>' +
+          '<td><span class="estado-badge '+estadoCls+'">'+f.estado+'</span></td>' +
+        '</tr>';
     });
 
-    html += '</tbody></table></div></div></div>';
+    html += '</tbody></table></div></div></div></div>';
   });
 
   document.getElementById('facturas-content').innerHTML = html;
