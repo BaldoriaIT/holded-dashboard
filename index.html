@@ -1243,6 +1243,7 @@ function renderFacturasTable() {
           '<th>Proyecto</th>' +
           '<th>Cuenta</th>' +
           '<th>F. Pago</th>' +
+          '<th class="num-col">Total</th>' +
           '<th class="num-col">Pendiente</th>' +
           '<th>Estado</th>' +
         '</tr></thead>' +
@@ -1276,6 +1277,7 @@ function renderFacturasTable() {
           '<td style="font-size:11px;color:var(--ink4);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escapeHtml(f.proyecto||'')+'">'+escapeHtml(f.proyecto||'—')+'</td>' +
           '<td style="font-size:10.5px;color:var(--ink4);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escapeHtml(f.cuenta||'')+'">'+escapeHtml(f.cuenta||'—')+'</td>' +
           '<td style="font-size:11px;color:var(--ink4);white-space:nowrap">'+escapeHtml(f.formaPago||'—')+'</td>' +
+          '<td class="num-col" style="color:var(--ink3);font-size:12px">'+fmt(f.totalAmount||0)+'</td>' +
           '<td class="num-col" style="font-weight:'+(days<0?600:400)+';color:'+(days<0?'var(--red)':'inherit')+'">'+fmt(f.pendiente)+'</td>' +
           '<td><span class="estado-badge '+estadoCls+'">'+f.estado+'</span></td>' +
         '</tr>';
