@@ -180,9 +180,11 @@ app.get('/api/debug/facturas',async(req,res)=>{
     '/purchases?limit=1',
     '/accounting/expense-accounts?limit=5',
     '/expense-accounts?limit=5',
-    '/expenses-accounts?limit=5',
+    '/accounting/expenses-accounts?limit=5',
     '/payment-methods?limit=10',
+    '/invoicing/payment-methods?limit=10',
     '/projects?limit=10',
+    '/invoicing/projects?limit=10',
   ];
   for(const ep of endpoints){
     try{
@@ -494,14 +496,23 @@ app.post('/api/mark-paid',async(req,res)=>{
       const kV1=apiKeyV1(envName);  // V1 for treasury lookup
       if(!k){results.push({invoiceId:tx.invoiceId,ok:false,error:'Sin API key v2'});continue;}
       try{
-        // Get bank account ID from V1 treasury
+        // Get bank account ID from V1 treasury — match by IBAN then by name
         let bankingAccountId='';
         if(kV1){
           try{
             const treasury=await v1Get('/invoicing/v1/treasury',kV1);
-            const tAcc=(Array.isArray(treasury)?treasury:[]).find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
+            const accs=Array.isArray(treasury)?treasury:[];
+            const cleanIBAN=debtorIBAN.replace(/[\s-]/g,'').toUpperCase();
+            // Try IBAN match first
+            let tAcc=accs.find(a=>(a.iban||'').replace(/[\s-]/g,'').toUpperCase()===cleanIBAN);
+            // Fallback: match by holdedName from ACCOUNTS_MAP
+            if(!tAcc){
+              const accMapEntry=ACCOUNTS_MAP.find(a=>a.iban.replace(/[\s-]/g,'').toUpperCase()===cleanIBAN);
+              if(accMapEntry){tAcc=accs.find(a=>a.name&&a.name.toUpperCase()===accMapEntry.holdedName.toUpperCase());}
+            }
             bankingAccountId=tAcc?.id||'';
-          }catch(e){}
+            if(!bankingAccountId) console.warn('No treasury account found for IBAN',debtorIBAN,'accs available:',accs.map(a=>a.name+' '+a.iban).join(', '));
+          }catch(e){console.error('treasury lookup:',e.message);}
         }
         // POST payment to V2
         await v2Post('/purchases/'+tx.invoiceId+'/payments',k,{
