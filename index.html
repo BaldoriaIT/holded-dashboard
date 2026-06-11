@@ -591,7 +591,7 @@ canvas.pie-canvas{max-width:180px;max-height:180px}
 </div>
 
 <!-- ═══════════════ MODAL ═══════════════ -->
-<div class="modal-overlay hidden" id="modal-overlay" onclick="closeModal(event)">
+<div class="modal-overlay hidden" id="modal-overlay" onclick="if(event.target===this)closeModal()" onclick="closeModal(event)">
   <div class="modal" onclick="e=>e.stopPropagation()">
     <div class="modal-header">
       <div class="modal-title" id="modal-title">Vista previa SEPA</div>
@@ -1296,19 +1296,30 @@ function escapeHtml(s) {
 
 function toggleF(id, checked) {
   if (checked) selectedFacturas.add(id); else selectedFacturas.delete(id);
+  // Fast DOM update — no full re-render
   const row = document.getElementById('frow-'+id);
   if (row) row.classList.toggle('selected', checked);
   updateSelectionBar();
   const btn=document.getElementById('btn-build-sepa'); if(btn) btn.disabled=selectedFacturas.size===0;
-  updateLiquidityCheck();
+  // Debounce liquidity check (heavy)
+  clearTimeout(window._liqTimer);
+  window._liqTimer = setTimeout(updateLiquidityCheck, 200);
 }
 
 function toggleSocAll(soc, checked) {
   FACTURAS_FILTERED.filter(f=>f.sociedad===soc).forEach(f=>{
     if(checked) selectedFacturas.add(f.id); else selectedFacturas.delete(f.id);
+    const row = document.getElementById('frow-'+f.id);
+    if (row) {
+      row.classList.toggle('selected', checked);
+      const cb = row.querySelector('.ftable-check');
+      if (cb) cb.checked = checked;
+    }
   });
-  renderFacturasTable();
-  updateLiquidityCheck();
+  updateSelectionBar();
+  const btn=document.getElementById('btn-build-sepa'); if(btn) btn.disabled=selectedFacturas.size===0;
+  clearTimeout(window._liqTimer);
+  window._liqTimer = setTimeout(updateLiquidityCheck, 200);
 }
 
 function selAllSoc(soc) { toggleSocAll(soc, true); }
@@ -1440,13 +1451,11 @@ async function executeCreateSEPA() {
     a.href=url; a.download=`remesa_SEPA_${fecha.split('/').join('-')}.xml`; a.click();
     URL.revokeObjectURL(url);
 
-    document.getElementById('modal-body').innerHTML+=`
-      <div style="margin-top:16px;padding:14px;background:rgba(42,122,86,0.08);border-radius:8px;border:1px solid rgba(42,122,86,0.2)">
-        <div style="color:var(--green);font-size:13px;font-weight:500;margin-bottom:4px">✅ XML descargado — ${json.count} transacciones — ${fmt(json.total)}</div>
-        '+(json.remesaId?'<div style="font-size:10.5px;color:var(--ink4)">ID Holded: '+json.remesaId+'</div>':'<div style="font-size:10.5px;color:var(--amber)">⚠ No se pudo registrar en Holded (no bloqueante)</div>')+'
-        <div style="font-size:11px;color:var(--ink4);margin-top:4px">Archivo guardado: remesa_SEPA_${fecha.split('/').join('-')}.xml</div>
-      </div>`;
-
+        document.getElementById('modal-body').innerHTML +=
+      '<div style="margin-top:16px;padding:14px;background:rgba(42,122,86,0.08);border-radius:8px;border:1px solid rgba(42,122,86,0.2)">' +
+      '<div style="color:var(--green);font-size:13px;font-weight:500;margin-bottom:4px">✅ XML descargado · ' + json.count + ' transacciones · ' + fmt(json.total) + '</div>' +
+      (json.remesaId ? '<div style="font-size:10.5px;color:var(--ink4)">ID Holded: '+json.remesaId+'</div>' : '<div style="font-size:10.5px;color:var(--amber)">⚠ No se pudo registrar en Holded (no bloqueante)</div>') +
+      '</div>';
     const txList = json.transactions || [];
     document.getElementById('modal-footer').innerHTML=`
       <button class="btn btn-outline" onclick="closeModal()">Cerrar sin marcar</button>
@@ -1458,45 +1467,29 @@ async function executeCreateSEPA() {
 }
 
 async function markPaid(transactions, debtorIBAN, fechaRemesa, concepto) {
-  if(!confirm(`¿Marcar ${transactions.length} factura(s) como PAGADAS en Holded?\n\nEsto registrará el pago con:\n• Cuenta: ${ibanShort(debtorIBAN)}\n• Fecha: ${fechaRemesa}\n• Concepto: ${concepto}\n\nEsta acción no se puede deshacer.`)) return;
+  if(!confirm('¿Marcar '+transactions.length+' factura(s) como PAGADAS en Holded?\n\nCuenta: '+ibanShort(debtorIBAN)+'\nFecha: '+fechaRemesa)) return;
   document.getElementById('modal-footer').innerHTML='<div style="color:var(--ink4);font-size:13px">⏳ Marcando facturas como pagadas en Holded...</div>';
   try {
     const enriched=transactions.map(tx=>{const f=FACTURAS_ALL.find(x=>x.id===tx.invoiceId);return{...tx,sociedad:f?.sociedad||''};});
-    const res=await fetch(`${API_BASE}/api/mark-paid`,{
+    const res=await fetch(API_BASE+'/api/mark-paid',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({transactions:enriched,debtorIBAN,fechaRemesa,concepto})
     });
     const json=await res.json();
     const errs=(json.results||[]).filter(r=>!r.ok);
-
     if(json.okCount>0) {
       setBanner('success','✅','<strong>'+json.okCount+' factura(s) marcadas como Pagadas en Holded.</strong>'+(errs.length>0?' '+errs.length+' con errores.':''));
     }
     selectedFacturas.clear();
     await loadFacturas(true);
-
-    const errDetail = errs.length > 0
-      ? `<div style="margin-top:8px;font-size:11px;color:var(--red)">${errs.map(e=>`❌ ${e.invoiceId}: ${e.error}`).join('<br>')}</div>`
-      : '';
-    document.getElementById('modal-footer').innerHTML=`
-      <div style="color:var(--green);font-size:13px">✅ ${json.okCount} factura(s) actualizadas en Holded'+(errs.length>0?' · '+errs.length+' errores':'')+'</div>
-      ${errDetail}
-      <button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
+    document.getElementById('modal-footer').innerHTML =
+      '<div style="color:var(--green);font-size:13px">✅ '+json.okCount+' factura(s) actualizadas en Holded'+(errs.length>0?' · '+errs.length+' errores':'')+'</div>' +
+      (errs.length>0 ? '<div style="margin-top:8px;font-size:11px;color:var(--red)">'+errs.map(function(e){return '❌ '+e.invoiceId+': '+e.error;}).join('<br>')+'</div>' : '') +
+      '<button class="btn btn-outline" onclick="closeModal()">Cerrar</button>';
   } catch(err) {
-    document.getElementById('modal-footer').innerHTML=`<div style="color:var(--red);font-size:13px">❌ ${err.message}</div><button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
+    document.getElementById('modal-footer').innerHTML='<div style="color:var(--red);font-size:13px">❌ '+err.message+'</div><button class="btn btn-outline" onclick="closeModal()">Cerrar</button>';
   }
 }
-
-function initSEPADate() {
-  const el=document.getElementById('sepa-fecha'); if(!el||el.value) return;
-  const t=new Date();
-  el.value=[String(t.getDate()).padStart(2,'0'),String(t.getMonth()+1).padStart(2,'0'),t.getFullYear()].join('/');
-}
-
-
-// ── INIT ──
-loadData();
-initSEPADate();
 </script>
 </body>
 </html>
