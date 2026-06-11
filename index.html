@@ -311,11 +311,11 @@ canvas.pie-canvas{max-width:180px;max-height:180px}
 /* ── FACTURAS TABLE ── */
 .ftable-wrap{background:white;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);margin-bottom:16px}
 .ftable-scroll{overflow-x:auto;width:100%}
-.ftable{width:100%;border-collapse:collapse;min-width:960px}
+.ftable{width:100%;border-collapse:collapse;min-width:1100px;table-layout:auto}
 .ftable th{background:var(--cream2);padding:9px 12px;font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:var(--ink4);font-weight:500;white-space:nowrap;border-bottom:1px solid var(--border);text-align:left;position:sticky;top:0;z-index:2}
-.ftable th.num-col{text-align:right}
+.ftable th.num-col{text-align:right;white-space:nowrap;min-width:90px;min-width:100px;white-space:nowrap}
 .ftable td{padding:8px 12px;font-size:12px;color:var(--ink);border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap}
-.ftable td.num-col{font-family:var(--font-num);font-size:13px;text-align:right}
+.ftable td.num-col{font-family:var(--font-num);font-size:13px;text-align:right;white-space:nowrap;min-width:90px;min-width:100px;white-space:nowrap}
 .ftable tr:last-child td{border-bottom:none}
 .ftable tr:hover td{background:var(--cream)}
 .ftable tr.vencida td{background:rgba(192,57,43,0.03)}
@@ -1437,7 +1437,7 @@ async function executeCreateSEPA() {
   const {soc,cuenta,concep,fecha} = window._sepaParams;
   document.getElementById('modal-footer').innerHTML='<div style="color:var(--ink4);font-size:13px">⏳ Creando remesa en Holded y generando XML...</div>';
   try {
-    const res=await fetch(`${API_BASE}/api/create-remesa`,{
+    const res=await fetch(API_BASE+'/api/create-remesa',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({sociedad:soc,debtorIBAN:cuenta,facturaIds:[...selectedFacturas],concepto:concep,fechaRemesa:fecha})
     });
@@ -1448,23 +1448,30 @@ async function executeCreateSEPA() {
     const blob=new Blob([json.xml],{type:'application/xml'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
-    a.href=url; a.download=`remesa_SEPA_${fecha.split('/').join('-')}.xml`; a.click();
+    a.href=url; a.download='remesa_SEPA_'+fecha.split('/').join('-')+'.xml'; a.click();
     URL.revokeObjectURL(url);
 
-        document.getElementById('modal-body').innerHTML +=
+    var remesaInfo =
       '<div style="margin-top:16px;padding:14px;background:rgba(42,122,86,0.08);border-radius:8px;border:1px solid rgba(42,122,86,0.2)">' +
       '<div style="color:var(--green);font-size:13px;font-weight:500;margin-bottom:4px">✅ XML descargado · ' + json.count + ' transacciones · ' + fmt(json.total) + '</div>' +
-      (json.remesaId ? '<div style="font-size:10.5px;color:var(--ink4)">ID Holded: '+json.remesaId+'</div>' : '<div style="font-size:10.5px;color:var(--amber)">⚠ No se pudo registrar en Holded (no bloqueante)</div>') +
+      (json.remesaId
+        ? '<div style="font-size:10.5px;color:var(--ink4)">ID Holded: '+json.remesaId+'</div>'
+        : '<div style="font-size:10.5px;color:var(--amber)">⚠ No se pudo registrar en Holded (no bloqueante)</div>') +
       '</div>';
-    const txList = json.transactions || [];
-    document.getElementById('modal-footer').innerHTML=`
-      <button class="btn btn-outline" onclick="closeModal()">Cerrar sin marcar</button>
-      <button class="btn btn-green" id="btn-mark-paid-final">✓ Marcar ${txList.length} factura(s) como Pagado en Holded</button>`;
-    document.getElementById('btn-mark-paid-final').onclick = () => markPaid(txList, cuenta, fecha, concep);
+    document.getElementById('modal-body').innerHTML += remesaInfo;
+
+    var txList = json.transactions || [];
+    document.getElementById('modal-footer').innerHTML =
+      '<button class="btn btn-outline" onclick="closeModal()">Cerrar sin marcar</button>' +
+      '<button class="btn btn-green" id="btn-mark-paid-final">✓ Marcar ' + txList.length + ' factura(s) como Pagado en Holded</button>';
+    document.getElementById('btn-mark-paid-final').onclick = function(){ markPaid(txList, cuenta, fecha, concep); };
   } catch(err) {
-    document.getElementById('modal-footer').innerHTML=`<div style="color:var(--red);font-size:13px">❌ ${err.message}</div><button class="btn btn-outline" onclick="closeModal()">Cerrar</button>`;
+    document.getElementById('modal-footer').innerHTML=
+      '<div style="color:var(--red);font-size:13px">❌ '+err.message+'</div>'+
+      '<button class="btn btn-outline" onclick="closeModal()">Cerrar</button>';
   }
 }
+
 
 async function markPaid(transactions, debtorIBAN, fechaRemesa, concepto) {
   if(!confirm('¿Marcar '+transactions.length+' factura(s) como PAGADAS en Holded?\n\nCuenta: '+ibanShort(debtorIBAN)+'\nFecha: '+fechaRemesa)) return;
