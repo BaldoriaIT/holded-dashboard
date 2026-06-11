@@ -1497,6 +1497,24 @@ async function markPaid(transactions, debtorIBAN, fechaRemesa, concepto) {
     document.getElementById('modal-footer').innerHTML='<div style="color:var(--red);font-size:13px">❌ '+err.message+'</div><button class="btn btn-outline" onclick="closeModal()">Cerrar</button>';
   }
 }
+
+function initSEPADate() {
+  const el = document.getElementById('sepa-fecha');
+  if (!el) return;
+  const today = new Date();
+  el.value = String(today.getDate()).padStart(2,'0') + '/' +
+              String(today.getMonth()+1).padStart(2,'0') + '/' +
+              today.getFullYear();
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function() {
+  initSEPADate();
+  render();
+  loadData();
+  loadFacturas();
+  loadRemesas();
+});
 </script>
 </body>
 </html>
