@@ -173,21 +173,40 @@ app.get('/api/health',(req,res)=>{
 app.get('/api/debug/facturas',async(req,res)=>{
   const envName=req.query.env||'API_BEATA_PASTA_GROUP';
   const k=apiKey(envName);
-  if(!k) return res.json({error:'No API key for: '+envName});
+  if(!k) return res.json({error:'No v2 key for: '+envName});
   const results={};
-  for(const ep of['/purchases?limit=2','/purchases?status=partial&limit=2','/payment-methods?limit=50','/projects?limit=20']){
+  // Test all lookup endpoints + 1 purchase sample
+  const endpoints=[
+    '/purchases?limit=1',
+    '/accounting/expense-accounts?limit=5',
+    '/expense-accounts?limit=5',
+    '/expenses-accounts?limit=5',
+    '/payment-methods?limit=10',
+    '/projects?limit=10',
+  ];
+  for(const ep of endpoints){
     try{
-      const r=await fetch('https://api.holded.com/api/v2'+ep,{headers:{'Authorization':'Bearer '+k,'Accept':'application/json'},signal:AbortSignal.timeout(8000)});
+      const r=await fetch('https://api.holded.com/api/v2'+ep,{
+        headers:{'Authorization':'Bearer '+k,'Accept':'application/json'},
+        signal:AbortSignal.timeout(8000),
+      });
       const text=await r.text();
       const isHtml=text.trim().startsWith('<');
       let parsed=null;
       if(!isHtml){try{parsed=JSON.parse(text);}catch(e){}}
       const items=Array.isArray(parsed)?parsed:(parsed&&(parsed.data||parsed.items||[]));
-      results[ep]={status:r.status,isJson:!isHtml&&parsed!==null,itemCount:Array.isArray(items)?items.length:0,firstItemFull:Array.isArray(items)?items[0]||null:null};
+      results[ep]={
+        status:r.status,
+        isJson:!isHtml&&parsed!==null,
+        itemCount:Array.isArray(items)?items.length:0,
+        // Full first item to see field names
+        firstItem:Array.isArray(items)?(items[0]||null):parsed,
+      };
     }catch(e){results[ep]={error:e.message};}
   }
   res.json({envName,apiVersion:'v2',timestamp:new Date().toISOString(),results});
 });
+
 
 // ─── GET /api/debug/balances ──────────────────────────────────────────
 app.get('/api/debug/balances',async(req,res)=>{
