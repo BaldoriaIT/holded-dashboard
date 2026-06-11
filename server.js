@@ -241,50 +241,50 @@ app.get('/api/debug/balances', async (req, res) => {
 });
 
 // ─── GET /api/balances ────────────────────────────────────────────────
-// Fetches banking account balances using v2 /banking-accounts
 app.get('/api/balances', async (req, res) => {
   try {
     const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
     const results = await Promise.allSettled(
       envs.map(async envName => {
         const k = apiKey(envName);
-        if (!k) return { envName, accounts:[] };
-        const data = await v2GetAll('/banking-accounts', k);
-        return { envName, accounts: data };
+        if (!k) return { envName, accounts:[], error:'no key' };
+        try {
+          const data = await v2GetAll('/banking-accounts', k);
+          return { envName, accounts: Array.isArray(data) ? data : [] };
+        } catch(e) {
+          console.error('balances', envName, e.message);
+          return { envName, accounts:[], error: e.message };
+        }
       })
     );
 
-    // Build lookup by name (uppercase) AND by IBAN for flexibility
-    const lookupByName = {};
     const lookupByIban = {};
+    const lookupByName = {};
+    const allAccounts  = [];
+
     results.forEach(r => {
-      if (r.status==='fulfilled' && r.value?.accounts) {
+      if (r.status==='fulfilled' && r.value && r.value.accounts) {
         r.value.accounts.forEach(acc => {
-          if (acc.name) lookupByName[acc.name.toUpperCase().trim()] = { balance: acc.balance ?? 0, id: acc.id };
-          if (acc.iban) lookupByIban[acc.iban.replace(/\s/g,'').toUpperCase()] = { balance: acc.balance ?? 0, id: acc.id };
+          allAccounts.push({ envName: r.value.envName, name: acc.name, iban: acc.iban, balance: acc.balance });
+          if (acc.iban) lookupByIban[acc.iban.replace(/[\s-]/g,'').toUpperCase()] = acc.balance ?? 0;
+          if (acc.name) lookupByName[acc.name.toUpperCase().trim()] = acc.balance ?? 0;
         });
       }
     });
 
     const data = ACCOUNTS_MAP.map(a => {
-      // Try by name first, then by IBAN
-      const byName = lookupByName[a.holdedName.toUpperCase()];
-      const byIban = lookupByIban[a.iban.replace(/\s/g,'').toUpperCase()];
-      const match  = byName || byIban || null;
-      return {
-        banco: a.banco, sociedad: a.sociedad, restaurante: a.restaurante,
-        iban: a.iban, color: a.color, holdedName: a.holdedName,
-        saldo: match ? (match.balance ?? 0) : null,
-        matchedBy: byName ? 'name' : byIban ? 'iban' : null,
-      };
+      const cleanIban = a.iban.replace(/[\s-]/g,'').toUpperCase();
+      let saldo = null, matchedBy = null;
+      if (lookupByIban[cleanIban] !== undefined) { saldo = lookupByIban[cleanIban]; matchedBy = 'iban'; }
+      else if (lookupByName[a.holdedName.toUpperCase()] !== undefined) { saldo = lookupByName[a.holdedName.toUpperCase()]; matchedBy = 'name'; }
+      return { banco:a.banco, sociedad:a.sociedad, restaurante:a.restaurante, iban:a.iban, color:a.color, holdedName:a.holdedName, saldo, matchedBy };
     });
 
     res.json({
-      success: true,
-      updatedAt: new Date().toISOString(),
-      found:    data.filter(d => d.saldo !== null).length,
-      notFound: data.filter(d => d.saldo === null).map(d => d.holdedName),
-      allHoldedNames: Object.keys(lookupByName),
+      success:true, updatedAt:new Date().toISOString(),
+      found:data.filter(d=>d.saldo!==null).length,
+      notFound:data.filter(d=>d.saldo===null).map(d=>d.holdedName),
+      allHoldedAccounts:allAccounts,
       data,
     });
   } catch(err) {
