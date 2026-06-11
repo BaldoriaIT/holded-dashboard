@@ -348,42 +348,58 @@ app.get('/api/facturas', async (req, res) => {
           seen.add(id);
           if (['paid','voided'].includes(inv.status) || inv.status===2 || inv.status===5) continue;
 
-          const totalAmt   = parseFloat(inv.total ?? inv.subtotal ?? inv.amount ?? 0);
-          // Holded v2 purchases: pending amount is in 'pending', 'outstandingAmount', or 'amountPending'
-          // If a direct pending field exists, use it; otherwise derive from total - paid
-          let pendingAmt;
-          if (inv.pending !== undefined && inv.pending !== null)
-            pendingAmt = parseFloat(inv.pending);
-          else if (inv.outstandingAmount !== undefined && inv.outstandingAmount !== null)
-            pendingAmt = parseFloat(inv.outstandingAmount);
-          else if (inv.amountPending !== undefined && inv.amountPending !== null)
-            pendingAmt = parseFloat(inv.amountPending);
-          else {
-            const paidAmt = parseFloat(inv.paid ?? inv.paidAmount ?? inv.amountPaid ?? inv.paidTotal ?? 0);
+          // Holded v2: amounts come as locale strings "617,10" — parse with comma
+          const parseHoldedNum = v => {
+            if (v === undefined || v === null) return 0;
+            if (typeof v === 'number') return v;
+            return parseFloat(String(v).replace(/\./g,'').replace(',','.')) || 0;
+          };
+          const totalAmt   = parseHoldedNum(inv.total ?? inv.subtotal ?? inv.amount);
+          // v2 uses payments_pending and payments_total
+          let pendingAmt, paidAmt;
+          if (inv.payments_pending !== undefined && inv.payments_pending !== null) {
+            pendingAmt = parseHoldedNum(inv.payments_pending);
+            paidAmt    = parseHoldedNum(inv.payments_total);
+          } else {
+            paidAmt    = parseHoldedNum(inv.paid ?? inv.paidAmount ?? inv.amountPaid ?? 0);
             pendingAmt = Math.max(0, totalAmt - paidAmt);
           }
           pendingAmt = Math.max(0, pendingAmt);
-          const paidAmt = Math.max(0, totalAmt - pendingAmt);
+          paidAmt    = Math.max(0, paidAmt);
+
+          // Holded v2 field names (confirmed from API response):
+          // document_number, contact_name, due_date, payments_pending, payments_total
+          const lineAccount = (inv.lines && inv.lines[0]) ? (inv.lines[0].account || '') : '';
+          const lineProject = (inv.lines && inv.lines[0]) ? (inv.lines[0].project_id || '') : '';
+
+          // Auto-fix status: if payments_pending == total, it's really "pending" not "partial"
+          let displayStatus = inv.status;
+          let displayStatusCode = purchaseStatusCode(inv.status);
+          if (pendingAmt <= 0.01 && totalAmt > 0) {
+            displayStatus = 'paid'; displayStatusCode = 2;
+          } else if (inv.status === 'partial' && Math.abs(pendingAmt - totalAmt) < 0.02) {
+            // partial but nothing paid yet — treat as pending
+            displayStatus = 'pending'; displayStatusCode = 1;
+          }
 
           allFacturas.push({
             id, holdedId:id, sociedad:soc, apiKeyEnv:envName,
-            fechaEmision: isoDate(parseDate(inv.date ?? inv.createdAt ?? inv.created)),
-            vencimiento:  isoDate(parseDate(inv.dueDate ?? inv.due_date ?? inv.expDate ?? inv.duedate)),
-            num:          inv.docNumber || inv.docNum || inv.number || inv.ref || '',
-            proveedor:    inv.contactName || inv.contact?.name || inv.supplierName || '',
-            proyecto:     inv.projectName || inv.project?.name || inv.project || inv.tag || '',
-            cuenta:       inv.expensesAccountName || inv.accountName || inv.account?.name || inv.category || '',
-            cuentaId:     inv.expensesAccountId || inv.accountId || inv.account?.id || '',
-            formaPago:    inv.paymentMethodName || inv.paymentMethod?.name || inv.paymentMethod || '',
+            fechaEmision: isoDate(parseDate(inv.date ?? inv.created ?? inv.createdAt)),
+            vencimiento:  isoDate(parseDate(inv.due_date ?? inv.dueDate ?? inv.expDate)),
+            num:          inv.document_number || inv.docNumber || inv.number || inv.ref || '',
+            proveedor:    inv.contact_name || inv.contactName || inv.contact?.name || '',
+            proyecto:     lineProject || inv.projectName || inv.project || '',
+            cuenta:       lineAccount || inv.accountName || '',
+            cuentaId:     lineAccount || inv.accountId || '',
+            formaPago:    inv.payment_method_id || inv.paymentMethodId || inv.paymentMethod || '',
             pendiente:    pendingAmt,
             totalAmount:  totalAmt,
             paidAmount:   paidAmt,
-            // Auto-override status based on amounts
-            estado:       (pendingAmt <= 0.01 && totalAmt > 0) ? 'Pagado' : purchaseStatusLabel(inv.status),
-            estadoCode:   (pendingAmt <= 0.01 && totalAmt > 0) ? 2 : purchaseStatusCode(inv.status),
+            estado:       purchaseStatusLabel(displayStatus),
+            estadoCode:   displayStatusCode,
             currency:     inv.currency || 'EUR',
-            contactIBAN:  inv.contactIban || inv.contact?.iban || inv.iban || inv.bankIban || '',
-            contactId:    inv.contactId || inv.contact?.id || '',
+            contactIBAN:  inv.contact_iban || inv.contactIban || inv.iban || '',
+            contactId:    inv.contact_id || inv.contactId || '',
           });
         }
       } catch(e) {
@@ -465,7 +481,7 @@ app.post('/api/create-remesa', async (req, res) => {
     const transactions = selected.map(inv => ({
       creditorName: inv.contactName||inv.contact?.name||'',
       creditorIBAN: inv.contactIban||inv.contact?.iban||inv.iban||'',
-      amount: Math.max(0,(inv.total??inv.amount??0)-(inv.paid??inv.amountPaid??0)),
+      amount: (() => { const ph = v => { if(!v&&v!==0) return 0; if(typeof v==='number') return v; return parseFloat(String(v).replace(/\./g,'').replace(',','.')) || 0; }; const pending = inv.payments_pending !== undefined ? ph(inv.payments_pending) : Math.max(0, ph(inv.total??inv.amount??0) - ph(inv.paid??inv.amountPaid??0)); return Math.max(0, pending); })(),
       concept: `Documento ${inv.docNumber||inv.num||inv.id}`,
       invoiceId: inv.id||inv._id,
     }));
