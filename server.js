@@ -10,7 +10,7 @@ app.use(express.json());
 app.use(express.static(__dirname));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
-// ─── MAPS ────────────────────────────────────────────────────────────
+// ─── MAPS ─────────────────────────────────────────────────────────────
 const BIC_MAP = {
   SANTANDER:'BSCHESMMXXX', SABADELL:'BSABESBBXXX', ABANCA:'ABNAESMMXXX',
   BBVA:'BBVAESMMXXX', BANKINTER:'BKBKESMMXXX', CAIXA:'CAIXESBBXXX',
@@ -25,6 +25,9 @@ const CIF_MAP = {
   'BEATA PASTA CALEIDO': 'B23845951',
   'BEATA PASTA SUR':     'B23845944',
 };
+
+// ACCOUNTS_MAP: holdedName must match EXACTLY the name in Holded treasury/banking
+// After first deploy, check /api/debug/balances to see the real names and fix if needed
 const ACCOUNTS_MAP = [
   { holdedName:'BALDORIA SANTANDER',   banco:'SANTANDER', sociedad:'BALDORIA GROUP',      restaurante:'Baldoria',   iban:'ES5100496733262116292134', color:'#84ceff', apiKeyEnv:'API_BALDORIA' },
   { holdedName:'HOLDING SANTANDER',    banco:'SANTANDER', sociedad:'BEATA BALDORIA',       restaurante:'Holding',    iban:'ES0200496733222716305627', color:'#e7ddb1', apiKeyEnv:'API_BEATA_BALDORIA' },
@@ -64,7 +67,7 @@ const ACCOUNTS_MAP = [
 const SOC_API = {};
 ACCOUNTS_MAP.forEach(a => { SOC_API[a.sociedad] = a.apiKeyEnv; });
 
-// ─── Helpers ─────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────
 function apiKey(envName)   { return process.env[envName] || null; }
 function apiKeyForSoc(soc) { const e = SOC_API[soc]; return e ? apiKey(e) : null; }
 function escapeXml(s) {
@@ -76,62 +79,95 @@ function tsToDate(ts) {
   return new Date(n > 1e10 ? n : n * 1000);
 }
 function isoDate(d) { return (d && d instanceof Date && !isNaN(d)) ? d.toISOString().substring(0,10) : ''; }
+function parseDate(v) {
+  if (!v) return null;
+  if (typeof v === 'number') return tsToDate(v);
+  // ISO string
+  const d = new Date(v);
+  return isNaN(d) ? null : d;
+}
 
-// ─── Safe Holded fetch ────────────────────────────────────────────────
-async function holdedFetch(method, endpoint, key, body) {
+// ─── Holded API v2 fetch ───────────────────────────────────────────────
+// v2 uses: Authorization: Bearer <token>
+// Base: https://api.holded.com/api/v2
+async function holdedV2Fetch(method, endpoint, token, body) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12000);
   try {
     const opts = {
       method,
       signal: controller.signal,
-      headers: { key, 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
     };
     if (body) opts.body = JSON.stringify(body);
-    const r = await fetch(`https://api.holded.com/api${endpoint}`, opts);
+    const r = await fetch(`https://api.holded.com/api/v2${endpoint}`, opts);
     clearTimeout(timer);
     const text = await r.text();
     if (!text || text.trim() === '') return null;
-    if (text.trim().startsWith('<')) throw new Error(`Holded HTML (${r.status}): ${endpoint}`);
+    if (text.trim().startsWith('<')) throw new Error(`Holded HTML response (${r.status}): ${endpoint}`);
     const json = JSON.parse(text);
-    if (!r.ok) throw new Error(`Holded ${r.status}: ${JSON.stringify(json).substring(0,200)}`);
+    if (!r.ok) throw new Error(`Holded v2 ${r.status}: ${JSON.stringify(json).substring(0,300)}`);
     return json;
   } catch(err) { clearTimeout(timer); throw err; }
 }
-const holdedGet  = (ep, k)    => holdedFetch('GET',  ep, k, null);
-const holdedPost = (ep, k, b) => holdedFetch('POST', ep, k, b);
-const holdedPut  = (ep, k, b) => holdedFetch('PUT',  ep, k, b);
 
-async function holdedGetAll(endpoint, key, maxPages=20) {
-  let page=1, results=[];
-  while (page <= maxPages) {
+const v2Get  = (ep, k)    => holdedV2Fetch('GET',  ep, k, null);
+const v2Post = (ep, k, b) => holdedV2Fetch('POST', ep, k, b);
+const v2Put  = (ep, k, b) => holdedV2Fetch('PUT',  ep, k, b);
+
+// v2 uses cursor pagination: response has { data: [...], meta: { nextCursor } }
+async function v2GetAll(endpoint, token, maxPages = 20) {
+  let results = [];
+  let cursor = null;
+  let page = 0;
+  while (page < maxPages) {
     const sep = endpoint.includes('?') ? '&' : '?';
-    const data = await holdedGet(`${endpoint}${sep}page=${page}&limit=100`, key);
+    const url = cursor ? `${endpoint}${sep}cursor=${cursor}&limit=100` : `${endpoint}${sep}limit=100`;
+    const data = await v2Get(url, token);
     if (!data) break;
-    const items = Array.isArray(data) ? data : (data.items||data.data||[]);
+    // v2 returns { data: [...], meta: { nextCursor, total } } or just array
+    const items = Array.isArray(data) ? data : (data.data || data.items || []);
     if (!items.length) break;
     results = results.concat(items);
-    if (items.length < 100) break;
+    cursor = data.meta?.nextCursor || data.nextCursor || null;
+    if (!cursor || items.length < 100) break;
     page++;
   }
   return results;
 }
 
-function expenseStatusLabel(code) {
-  if (typeof code === 'string') {
-    return {pending:'Pendiente',paid:'Pagado',overdue:'Vencida',partial:'Parcial',draft:'Borrador',voided:'Anulada'}[code] || code;
-  }
-  return {0:'Borrador',1:'Pendiente',2:'Pagado',3:'Parcial',4:'Vencida',5:'Anulada'}[code] ?? 'Estado '+code;
+function purchaseStatusLabel(status) {
+  const m = {
+    pending:'Pendiente', draft:'Borrador', paid:'Pagado',
+    overdue:'Vencida', partial:'Parcial', voided:'Anulada',
+    // numeric fallback
+    0:'Borrador', 1:'Pendiente', 2:'Pagado', 3:'Parcial', 4:'Vencida', 5:'Anulada'
+  };
+  return m[status] ?? String(status);
+}
+function purchaseStatusCode(status) {
+  if (typeof status === 'number') return status;
+  return {pending:1,draft:0,paid:2,partial:3,overdue:4,voided:5}[status] ?? 1;
 }
 
 // ─── GET /api/health ──────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
-  res.json({ status:'ok', keysConfigured:envs.filter(e=>process.env[e]), keysMissing:envs.filter(e=>!process.env[e]), timestamp:new Date().toISOString() });
+  res.json({
+    status:'ok',
+    apiVersion: 'v2 (Bearer token)',
+    keysConfigured: envs.filter(e=>process.env[e]),
+    keysMissing:    envs.filter(e=>!process.env[e]),
+    timestamp: new Date().toISOString()
+  });
 });
 
 // ─── GET /api/debug/facturas ──────────────────────────────────────────
-// Tests every possible endpoint AND shows treasury account names for mapping fix
+// Tests v2 endpoints and shows raw account/purchase data
 app.get('/api/debug/facturas', async (req, res) => {
   const envName = req.query.env || 'API_BEATA_PASTA_GROUP';
   const k = apiKey(envName);
@@ -141,43 +177,71 @@ app.get('/api/debug/facturas', async (req, res) => {
   const results = {};
 
   const toTest = [
-    '/invoicing/v1/treasury',
-    '/invoicing/v1/documents?docType=purchase&page=1&limit=3',
-    '/invoicing/v1/documents?docType=purchase&status=pending&page=1&limit=3',
-    '/invoicing/v1/documents?docType=invoice&page=1&limit=3',
-    '/invoicing/v1/documents?docType=salesreceipt&page=1&limit=3',
-    '/invoicing/v1/expenses?page=1&limit=3',
-    '/invoicing/v1/bills?page=1&limit=3',
+    '/banking-accounts?limit=5',
+    '/purchases?limit=3',
+    '/purchases?status=pending&limit=3',
+    '/purchases?status=overdue&limit=3',
   ];
 
   for (const ep of toTest) {
     try {
-      const r = await fetch('https://api.holded.com/api'+ep, {
-        headers: { key: k, Accept: 'application/json' },
+      const r = await fetch('https://api.holded.com/api/v2'+ep, {
+        headers: { 'Authorization': `Bearer ${k}`, 'Accept': 'application/json' },
         signal: AbortSignal.timeout(8000),
       });
       const text = await r.text();
       const isHtml = text.trim().startsWith('<');
       let parsed = null;
       if (!isHtml) { try { parsed = JSON.parse(text); } catch(e) {} }
-      const items = Array.isArray(parsed) ? parsed : (parsed?.items||parsed?.data||[]);
+      const items = Array.isArray(parsed) ? parsed : (parsed?.data || parsed?.items || []);
       results[ep] = {
         status: r.status,
         isHtml,
         isJson: !isHtml && parsed !== null,
         itemCount: items.length,
-        accountNames: ep.includes('treasury') ? items.map(a => a.name||a.id) : undefined,
-        keys: items[0] ? Object.keys(items[0]).slice(0,12) : [],
-        preview: text.substring(0, isHtml ? 80 : 400),
+        // Show account names for mapping fix
+        accountNames: ep.includes('banking') ? items.map(a => ({ name: a.name, id: a.id, iban: a.iban, balance: a.balance })) : undefined,
+        // Show purchase field names
+        firstItemKeys: items[0] ? Object.keys(items[0]).slice(0,15) : [],
+        firstItemSample: items[0] ? {
+          id: items[0].id,
+          status: items[0].status,
+          date: items[0].date,
+          dueDate: items[0].dueDate,
+          total: items[0].total,
+          paid: items[0].paid,
+          docNumber: items[0].docNumber,
+          contactName: items[0].contactName || items[0].contact?.name,
+        } : null,
+        rawPreview: text.substring(0, isHtml ? 100 : 500),
       };
     } catch(e) {
       results[ep] = { error: e.message };
     }
   }
-  res.json({ envName, keyInfo, timestamp: new Date().toISOString(), results });
+  res.json({ envName, keyInfo, apiVersion:'v2', timestamp: new Date().toISOString(), results });
+});
+
+// ─── GET /api/debug/balances ──────────────────────────────────────────
+// Shows the real account names returned by Holded v2 banking-accounts
+app.get('/api/debug/balances', async (req, res) => {
+  const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
+  const allAccounts = [];
+  await Promise.allSettled(envs.map(async envName => {
+    const k = apiKey(envName);
+    if (!k) return;
+    try {
+      const data = await v2GetAll('/banking-accounts', k);
+      data.forEach(acc => allAccounts.push({ envName, id: acc.id, name: acc.name, iban: acc.iban, balance: acc.balance }));
+    } catch(e) {
+      allAccounts.push({ envName, error: e.message });
+    }
+  }));
+  res.json({ count: allAccounts.length, accounts: allAccounts });
 });
 
 // ─── GET /api/balances ────────────────────────────────────────────────
+// Fetches banking account balances using v2 /banking-accounts
 app.get('/api/balances', async (req, res) => {
   try {
     const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
@@ -185,34 +249,52 @@ app.get('/api/balances', async (req, res) => {
       envs.map(async envName => {
         const k = apiKey(envName);
         if (!k) return { envName, accounts:[] };
-        const data = await holdedGet('/invoicing/v1/treasury', k);
-        return { envName, accounts: Array.isArray(data)?data:[] };
+        const data = await v2GetAll('/banking-accounts', k);
+        return { envName, accounts: data };
       })
     );
-    const lookup = {};
+
+    // Build lookup by name (uppercase) AND by IBAN for flexibility
+    const lookupByName = {};
+    const lookupByIban = {};
     results.forEach(r => {
       if (r.status==='fulfilled' && r.value?.accounts) {
         r.value.accounts.forEach(acc => {
-          if (acc.name) lookup[acc.name.toUpperCase().trim()] = acc.balance ?? 0;
+          if (acc.name) lookupByName[acc.name.toUpperCase().trim()] = { balance: acc.balance ?? 0, id: acc.id };
+          if (acc.iban) lookupByIban[acc.iban.replace(/\s/g,'').toUpperCase()] = { balance: acc.balance ?? 0, id: acc.id };
         });
       }
     });
-    const data = ACCOUNTS_MAP.map(a => ({
-      banco:a.banco, sociedad:a.sociedad, restaurante:a.restaurante,
-      iban:a.iban, color:a.color, holdedName:a.holdedName,
-      saldo: lookup[a.holdedName.toUpperCase()] ?? null,
-    }));
+
+    const data = ACCOUNTS_MAP.map(a => {
+      // Try by name first, then by IBAN
+      const byName = lookupByName[a.holdedName.toUpperCase()];
+      const byIban = lookupByIban[a.iban.replace(/\s/g,'').toUpperCase()];
+      const match  = byName || byIban || null;
+      return {
+        banco: a.banco, sociedad: a.sociedad, restaurante: a.restaurante,
+        iban: a.iban, color: a.color, holdedName: a.holdedName,
+        saldo: match ? (match.balance ?? 0) : null,
+        matchedBy: byName ? 'name' : byIban ? 'iban' : null,
+      };
+    });
+
     res.json({
-      success:true, updatedAt:new Date().toISOString(),
-      found:data.filter(d=>d.saldo!==null).length,
-      notFound:data.filter(d=>d.saldo===null).map(d=>d.holdedName),
-      allHoldedNames: Object.keys(lookup),
+      success: true,
+      updatedAt: new Date().toISOString(),
+      found:    data.filter(d => d.saldo !== null).length,
+      notFound: data.filter(d => d.saldo === null).map(d => d.holdedName),
+      allHoldedNames: Object.keys(lookupByName),
       data,
     });
-  } catch(err) { res.status(500).json({success:false,error:err.message}); }
+  } catch(err) {
+    console.error('/api/balances:', err.message);
+    res.status(500).json({success:false, error:err.message});
+  }
 });
 
 // ─── GET /api/facturas ────────────────────────────────────────────────
+// Fetches unpaid purchases using v2 /purchases
 app.get('/api/facturas', async (req, res) => {
   try {
     const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
@@ -225,56 +307,52 @@ app.get('/api/facturas', async (req, res) => {
       const soc = ACCOUNTS_MAP.find(a => a.apiKeyEnv === envName)?.sociedad || envName;
       try {
         let rawInvoices = [];
-        // Try pending/overdue/partial with documents API
+        // Fetch pending + overdue + partial
         const fetchResults = await Promise.allSettled([
-          holdedGetAll('/invoicing/v1/documents?docType=purchase&status=pending', k),
-          holdedGetAll('/invoicing/v1/documents?docType=purchase&status=overdue', k),
-          holdedGetAll('/invoicing/v1/documents?docType=purchase&status=partial', k),
+          v2GetAll('/purchases?status=pending', k),
+          v2GetAll('/purchases?status=overdue', k),
+          v2GetAll('/purchases?status=partial', k),
         ]);
         fetchResults.forEach(r => {
           if (r.status==='fulfilled' && Array.isArray(r.value)) rawInvoices = rawInvoices.concat(r.value);
         });
-        // Fallback: all purchases without status filter
+        // Fallback: all purchases
         if (rawInvoices.length === 0) {
           try {
-            const all = await holdedGetAll('/invoicing/v1/documents?docType=purchase', k);
-            rawInvoices = all.filter(inv => inv.status !== 'paid' && inv.status !== 2 && inv.status !== 5 && inv.status !== 'voided');
-          } catch(e) { errors.push({env:envName, soc, error:e.message}); }
+            const all = await v2GetAll('/purchases', k);
+            rawInvoices = all.filter(inv => !['paid','voided'].includes(inv.status) && inv.status !== 2 && inv.status !== 5);
+          } catch(e) { errors.push({env:envName, soc, error:'fallback: '+e.message}); }
         }
 
         const seen = new Set();
         for (const inv of rawInvoices) {
-          const id = inv.id||inv._id;
+          const id = inv.id || inv._id;
           if (!id || seen.has(id)) continue;
           seen.add(id);
-          if (inv.status==='paid'||inv.status===2||inv.status===5||inv.status==='voided') continue;
+          if (['paid','voided'].includes(inv.status) || inv.status===2 || inv.status===5) continue;
 
-          const totalAmt   = parseFloat(inv.total??inv.subtotal??inv.amount??0);
-          const paidAmt    = parseFloat(inv.paid??inv.paidAmount??inv.amountPaid??0);
+          const totalAmt   = parseFloat(inv.total ?? inv.subtotal ?? inv.amount ?? 0);
+          const paidAmt    = parseFloat(inv.paid  ?? inv.paidAmount ?? inv.amountPaid ?? 0);
           const pendingAmt = Math.max(0, totalAmt - paidAmt);
-
-          const statusCode = inv.status;
-          const statusCodeNum = typeof inv.status==='number' ? inv.status :
-            ({pending:1,overdue:4,partial:3,paid:2,draft:0}[inv.status]??1);
 
           allFacturas.push({
             id, holdedId:id, sociedad:soc, apiKeyEnv:envName,
-            fechaEmision: isoDate(tsToDate(inv.date??inv.created??inv.createdAt)),
-            vencimiento:  isoDate(tsToDate(inv.dueDate??inv.duedate??inv.due_date??inv.expDate)),
-            num:          inv.docNumber||inv.docNum||inv.num||inv.number||inv.ref||'',
-            proveedor:    inv.contactName||inv.contact?.name||inv.contactInfo?.name||'',
-            proyecto:     inv.projectName||inv.project?.name||inv.project||inv.tag||'',
-            cuenta:       inv.accountName||inv.account?.name||'',
-            cuentaId:     inv.accountId||inv.account?.id||'',
-            formaPago:    inv.paymentMethodInfo?.name||inv.paymentMethod?.name||inv.paymentMethod||inv.payMethod||'',
+            fechaEmision: isoDate(parseDate(inv.date ?? inv.createdAt ?? inv.created)),
+            vencimiento:  isoDate(parseDate(inv.dueDate ?? inv.due_date ?? inv.expDate ?? inv.duedate)),
+            num:          inv.docNumber || inv.docNum || inv.number || inv.ref || '',
+            proveedor:    inv.contactName || inv.contact?.name || inv.supplierName || '',
+            proyecto:     inv.projectName || inv.project?.name || inv.project || inv.tag || '',
+            cuenta:       inv.expensesAccountName || inv.accountName || inv.account?.name || inv.category || '',
+            cuentaId:     inv.expensesAccountId || inv.accountId || inv.account?.id || '',
+            formaPago:    inv.paymentMethodName || inv.paymentMethod?.name || inv.paymentMethod || '',
             pendiente:    pendingAmt,
             totalAmount:  totalAmt,
             paidAmount:   paidAmt,
-            estado:       expenseStatusLabel(statusCode),
-            estadoCode:   statusCodeNum,
-            currency:     inv.currency||'EUR',
-            contactIBAN:  inv.contactInfo?.iban||inv.contact?.iban||inv.iban||inv.bankIban||'',
-            contactId:    inv.contactId||inv.contact?.id||'',
+            estado:       purchaseStatusLabel(inv.status),
+            estadoCode:   purchaseStatusCode(inv.status),
+            currency:     inv.currency || 'EUR',
+            contactIBAN:  inv.contactIban || inv.contact?.iban || inv.iban || inv.bankIban || '',
+            contactId:    inv.contactId || inv.contact?.id || '',
           });
         }
       } catch(e) {
@@ -298,21 +376,23 @@ app.get('/api/remesas', async (req, res) => {
       const k = apiKey(envName);
       if (!k) return;
       const soc = ACCOUNTS_MAP.find(a => a.apiKeyEnv === envName)?.sociedad || envName;
-      for (const ep of ['/invoicing/v1/paymentorders','/invoicing/v1/treasury/paymentorders']) {
+      // Try v2 payment-orders endpoint
+      for (const ep of ['/payment-orders', '/paymentorders']) {
         try {
-          const data = await holdedGet(ep, k);
+          const data = await v2Get(ep+'?limit=50', k);
           if (!data) continue;
-          const list = Array.isArray(data) ? data : (data.items||data.data||[]);
+          const list = Array.isArray(data) ? data : (data.data||data.items||[]);
           list.forEach(rem => {
             allRemesas.push({
-              id:rem.id||rem._id, name:rem.name||rem.concept||rem.id, sociedad:soc,
-              date:rem.date ? new Date(rem.date>1e10?rem.date:rem.date*1000).toISOString() : new Date().toISOString(),
-              status:rem.status===2?'completed':rem.status===1?'sent':'pending',
-              total:rem.amount||0,
-              transactions:(rem.payments||rem.items||[]).map(tx=>({
-                creditorName:tx.contactName||tx.name||'', creditorIBAN:tx.iban||tx.creditorIBAN||'',
-                debtorIBAN:rem.iban||'', amount:tx.amount||0, concept:tx.concept||'',
-                invoiceId:tx.invoiceId||tx.docId||null,
+              id: rem.id||rem._id, name: rem.name||rem.concept||rem.id, sociedad: soc,
+              date: rem.date ? new Date(rem.date>1e10?rem.date:rem.date*1000).toISOString() : new Date().toISOString(),
+              status: rem.status===2?'completed':rem.status===1?'sent':'pending',
+              total: rem.amount||0,
+              transactions: (rem.payments||rem.items||[]).map(tx=>({
+                creditorName: tx.contactName||tx.name||'',
+                creditorIBAN: tx.iban||tx.creditorIBAN||'',
+                debtorIBAN: rem.iban||'', amount: tx.amount||0,
+                concept: tx.concept||'', invoiceId: tx.invoiceId||tx.docId||null,
               })),
             });
           });
@@ -322,7 +402,7 @@ app.get('/api/remesas', async (req, res) => {
     }));
     allRemesas.sort((a,b) => new Date(b.date)-new Date(a.date));
     res.json({ success:true, data:allRemesas });
-  } catch(err) { res.status(500).json({success:false,error:err.message}); }
+  } catch(err) { res.status(500).json({success:false, error:err.message}); }
 });
 
 // ─── POST /api/create-remesa ──────────────────────────────────────────
@@ -333,19 +413,18 @@ app.post('/api/create-remesa', async (req, res) => {
       return res.status(400).json({success:false,error:'Faltan campos: sociedad, debtorIBAN, facturaIds'});
     if (!concepto)
       return res.status(400).json({success:false,error:'El concepto es obligatorio'});
-
     const k = apiKeyForSoc(sociedad);
     if (!k) return res.status(400).json({success:false,error:`Sin API key para ${sociedad}`});
 
     let rawInvoices = [];
-    const fetchR = await Promise.allSettled([
-      holdedGetAll('/invoicing/v1/documents?docType=purchase&status=pending', k),
-      holdedGetAll('/invoicing/v1/documents?docType=purchase&status=overdue', k),
-      holdedGetAll('/invoicing/v1/documents?docType=purchase&status=partial', k),
+    const fr = await Promise.allSettled([
+      v2GetAll('/purchases?status=pending', k),
+      v2GetAll('/purchases?status=overdue', k),
+      v2GetAll('/purchases?status=partial', k),
     ]);
-    fetchR.forEach(r => { if (r.status==='fulfilled') rawInvoices = rawInvoices.concat(r.value||[]); });
+    fr.forEach(r => { if (r.status==='fulfilled') rawInvoices = rawInvoices.concat(r.value||[]); });
     if (!rawInvoices.length) {
-      try { rawInvoices = await holdedGetAll('/invoicing/v1/documents?docType=purchase', k); } catch(e) {}
+      try { rawInvoices = await v2GetAll('/purchases', k); } catch(e) {}
     }
 
     const selected = rawInvoices.filter(inv => facturaIds.includes(inv.id||inv._id));
@@ -354,19 +433,18 @@ app.post('/api/create-remesa', async (req, res) => {
 
     const transactions = selected.map(inv => ({
       creditorName: inv.contactName||inv.contact?.name||'',
-      creditorIBAN: inv.iban||inv.contact?.iban||inv.bankIban||'',
+      creditorIBAN: inv.contactIban||inv.contact?.iban||inv.iban||'',
       amount: Math.max(0,(inv.total??inv.amount??0)-(inv.paid??inv.amountPaid??0)),
       concept: `Documento ${inv.docNumber||inv.num||inv.id}`,
       invoiceId: inv.id||inv._id,
-      docNumber: inv.docNumber||inv.num||'',
     }));
     const total = transactions.reduce((s,t)=>s+t.amount,0);
     const execDateObj = fechaRemesa ? new Date(fechaRemesa.split('/').reverse().join('-')) : new Date();
     const execDate = isoDate(execDateObj);
     const creaDtTm = new Date().toISOString().replace('Z','');
     const debtorAcc = ACCOUNTS_MAP.find(a=>a.iban.replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
-    const bic = BIC_MAP[debtorAcc?.banco]||'NOTPROVIDED';
-    const cif = CIF_MAP[sociedad]||'NOTPROVIDED';
+    const bic  = BIC_MAP[debtorAcc?.banco]||'NOTPROVIDED';
+    const cif  = CIF_MAP[sociedad]||'NOTPROVIDED';
     const msgId = `Holded/${Date.now()}`;
 
     const txXml = transactions.map(tx =>
@@ -395,17 +473,20 @@ app.post('/api/create-remesa', async (req, res) => {
       `<ChrgBr>SLEV</ChrgBr>${txXml}` +
       `</PmtInf></CstmrCdtTrfInitn></Document>`;
 
+    // Register in Holded (non-fatal)
     let holdedRemesaId = null;
     try {
-      const treasury = await holdedGet('/invoicing/v1/treasury', k);
-      const tAcc = (Array.isArray(treasury)?treasury:[]).find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
-      const payload = { name:concepto, concept:concepto, accountId:tAcc?.id||'',
+      const bankAccounts = await v2GetAll('/banking-accounts', k);
+      const tAcc = bankAccounts.find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
+      const payload = {
+        name:concepto, concept:concepto, accountId:tAcc?.id||'',
         date:Math.floor(execDateObj.getTime()/1000), amount:total,
-        payments:transactions.map(t=>({docId:t.invoiceId,amount:t.amount,concept:t.concept})) };
-      for (const ep of ['/invoicing/v1/paymentorders','/invoicing/v1/treasury/paymentorders']) {
-        try { const c=await holdedPost(ep,k,payload); if(c){holdedRemesaId=c.id||c._id;break;} } catch(e){}
+        payments:transactions.map(t=>({docId:t.invoiceId,amount:t.amount,concept:t.concept}))
+      };
+      for (const ep of ['/payment-orders','/paymentorders']) {
+        try { const c=await v2Post(ep,k,payload); if(c){holdedRemesaId=c.id||c._id;break;} } catch(e){}
       }
-    } catch(e) {}
+    } catch(e) { console.warn('Holded remesa registration (non-fatal):', e.message); }
 
     res.json({success:true, xml, remesaId:holdedRemesaId, msgId, total, count:transactions.length, execDate, concepto,
       transactions:transactions.map(t=>({creditorName:t.creditorName,creditorIBAN:t.creditorIBAN,amount:t.amount,concept:t.concept,invoiceId:t.invoiceId}))});
@@ -426,15 +507,19 @@ app.post('/api/mark-paid', async (req, res) => {
       const k = apiKeyForSoc(tx.sociedad);
       if (!k) { results.push({invoiceId:tx.invoiceId,ok:false,error:'Sin API key'}); continue; }
       try {
-        const treasury = await holdedGet('/invoicing/v1/treasury', k);
-        const tAcc = (Array.isArray(treasury)?treasury:[]).find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
-        await holdedPost(`/invoicing/v1/documents/${tx.invoiceId}/pay`, k, {
-          date:execTs, amount:tx.amount, accountId:tAcc?.id||'',
-          concept:concepto||'Pago remesa SEPA',
-          notes:`Cuenta: ${debtorIBAN} | Fecha: ${isoDate(execDateObj)}`,
+        const bankAccounts = await v2GetAll('/banking-accounts', k);
+        const tAcc = bankAccounts.find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
+        // v2 endpoint: POST /purchases/{id}/payments
+        await v2Post(`/purchases/${tx.invoiceId}/payments`, k, {
+          date: execTs,
+          amount: tx.amount,
+          bankingAccountId: tAcc?.id || '',
+          concept: concepto || 'Pago remesa SEPA',
+          notes: `Cuenta: ${debtorIBAN} | Fecha: ${isoDate(execDateObj)}`,
         });
         results.push({invoiceId:tx.invoiceId, ok:true});
       } catch(e) {
+        console.error(`mark-paid ${tx.invoiceId}:`, e.message);
         results.push({invoiceId:tx.invoiceId, ok:false, error:e.message});
       }
     }
@@ -452,12 +537,15 @@ app.post('/api/remesa-complete', async (req, res) => {
     await Promise.allSettled(envs.map(async envName => {
       const k = apiKey(envName);
       if (!k||updated) return;
-      for (const ep of ['/invoicing/v1/paymentorders','/invoicing/v1/treasury/paymentorders']) {
-        try { await holdedPut(`${ep}/${remesaId}`,k,{status:2}); updated=true; break; } catch(e){}
+      for (const ep of ['/payment-orders','/paymentorders']) {
+        try { await v2Put(`${ep}/${remesaId}`,k,{status:2}); updated=true; break; } catch(e){}
       }
     }));
     res.json({success:true,updated});
   } catch(err) { res.status(500).json({success:false,error:err.message}); }
 });
 
-app.listen(PORT, () => console.log(`✅ Servidor en puerto ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Servidor en puerto ${PORT} — Holded API v2 (Bearer token)`);
+  const missing = Object.keys(process.env).filter ? [] : [];
+});
