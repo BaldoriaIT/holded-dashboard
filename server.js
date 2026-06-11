@@ -213,60 +213,29 @@ app.get('/api/health', (req, res) => {
 });
 
 // ─── GET /api/debug/facturas ──────────────────────────────────────────
-// Tests v2 endpoints and shows raw account/purchase data
 app.get('/api/debug/facturas', async (req, res) => {
   const envName = req.query.env || 'API_BEATA_PASTA_GROUP';
   const k = apiKey(envName);
-  if (!k) return res.json({ error:'No API key for: '+envName, configured: Object.keys(process.env).filter(e=>e.startsWith('API_')) });
-
+  if (!k) return res.json({ error:'No API key for: '+envName });
   const keyInfo = { length: k.length, first4: k.substring(0,4), last4: k.slice(-4) };
   const results = {};
-
-  const toTest = [
-    '/banking-accounts?limit=5',
-    '/purchases?limit=3',
-    '/purchases?status=pending&limit=3',
-    '/purchases?status=overdue&limit=3',
-  ];
-
-  for (const ep of toTest) {
+  for (const ep of ['/purchases?limit=2', '/purchases?status=partial&limit=2', '/purchases?status=pending&limit=2']) {
     try {
       const r = await fetch('https://api.holded.com/api/v2'+ep, {
-        headers: { 'Authorization': `Bearer ${k}`, 'Accept': 'application/json' },
+        headers: { 'Authorization': 'Bearer '+k, 'Accept': 'application/json' },
         signal: AbortSignal.timeout(8000),
       });
       const text = await r.text();
       const isHtml = text.trim().startsWith('<');
       let parsed = null;
       if (!isHtml) { try { parsed = JSON.parse(text); } catch(e) {} }
-      const items = Array.isArray(parsed) ? parsed : (parsed?.data || parsed?.items || []);
-      results[ep] = {
-        status: r.status,
-        isHtml,
-        isJson: !isHtml && parsed !== null,
-        itemCount: items.length,
-        // Show account names for mapping fix
-        accountNames: ep.includes('banking') ? items.map(a => ({ name: a.name, id: a.id, iban: a.iban, balance: a.balance })) : undefined,
-        // Show purchase field names
-        firstItemKeys: items[0] ? Object.keys(items[0]).slice(0,15) : [],
-        firstItemSample: items[0] ? {
-          id: items[0].id,
-          status: items[0].status,
-          date: items[0].date,
-          dueDate: items[0].dueDate,
-          total: items[0].total,
-          paid: items[0].paid,
-          docNumber: items[0].docNumber,
-          contactName: items[0].contactName || items[0].contact?.name,
-        } : null,
-        rawPreview: text.substring(0, isHtml ? 100 : 500),
-      };
-    } catch(e) {
-      results[ep] = { error: e.message };
-    }
+      const items = Array.isArray(parsed) ? parsed : (parsed && (parsed.data||parsed.items||[]));
+      results[ep] = { status:r.status, isJson:!isHtml&&parsed!==null, itemCount:Array.isArray(items)?items.length:0, firstItemFull:Array.isArray(items)?items[0]||null:null };
+    } catch(e) { results[ep] = { error: e.message }; }
   }
-  res.json({ envName, keyInfo, apiVersion:'v2', timestamp: new Date().toISOString(), results });
+  res.json({ envName, keyInfo, apiVersion:'v2', timestamp:new Date().toISOString(), results });
 });
+
 
 // ─── GET /api/debug/balances ──────────────────────────────────────────
 // Shows the real account names returned by Holded v2 banking-accounts
