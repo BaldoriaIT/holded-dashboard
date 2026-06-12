@@ -371,7 +371,30 @@ app.get('/api/facturas',async(req,res)=>{
         if(projRes.status==='fulfilled'&&Array.isArray(projRes.value))
           projRes.value.forEach(p=>{if(p.id) projMap[p.id]=p.name||p.title||'';});
 
-        // Note: expense account names not available via API — cuenta column shows — 
+        // Resolve cuenta names: try v1 GET /invoicing/v1/documents/{id} for each unique account ID
+        // This is the only known path that might return account names in Holded
+        if(kV1lookup){
+          const uniqueAcctIds=[...new Set(rawInvoices.map(inv=>inv.lines?.[0]?.account).filter(Boolean))];
+          // Fetch max 10 unique accounts to avoid rate limit
+          const toFetch=uniqueAcctIds.slice(0,10);
+          for(const acctId of toFetch){
+            if(acctMap[acctId]) continue;
+            // Try: GET first invoice that uses this account to extract account info from v1
+            const sampleInv=rawInvoices.find(inv=>inv.lines?.[0]?.account===acctId);
+            if(sampleInv){
+              try{
+                const v1inv=await v1Get('/invoicing/v1/documents/'+sampleInv.id,kV1lookup);
+                if(v1inv){
+                  // v1 might return accountName, account.name, or similar
+                  const aName=v1inv.accountName||v1inv.account?.name||v1inv.ledgerAccount||
+                    (v1inv.lines&&v1inv.lines[0]&&(v1inv.lines[0].accountName||v1inv.lines[0].account?.name))||'';
+                  if(aName) acctMap[acctId]=aName;
+                }
+              }catch(e){}
+            }
+            await new Promise(r=>setTimeout(r,150)); // avoid 429
+          }
+        }
 
         const seen=new Set();
         for(const inv of rawInvoices){
@@ -590,10 +613,17 @@ app.post('/api/mark-paid',async(req,res)=>{
     const results=[];
 
     for(const tx of transactions){
-      const envName=SOC_API[tx.sociedad]||'';
-      const k=apiKey(envName);      // V2 for the purchase payment
-      const kV1=apiKeyV1(envName);  // V1 for treasury lookup
-      if(!k){results.push({invoiceId:tx.invoiceId,ok:false,error:'Sin API key v2'});continue;}
+      let envName=SOC_API[tx.sociedad]||'';
+      // Fallback: if sociedad not found, try all envs to find the invoice
+      if(!envName){
+        for(const [soc,env] of Object.entries(SOC_API)){
+          if(apiKey(env)){envName=env;break;}
+        }
+        console.warn('sociedad "'+tx.sociedad+'" not in SOC_API, using fallback envName='+envName);
+      }
+      const k=apiKey(envName);
+      const kV1=apiKeyV1(envName);
+      if(!k){results.push({invoiceId:tx.invoiceId,ok:false,error:'Sin API key para sociedad: '+(tx.sociedad||'desconocida')});continue;}
       try{
         // Get bank account ID from V1 treasury — match by IBAN, holdedName, or accountName
         let bankingAccountId='';
