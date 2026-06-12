@@ -372,14 +372,25 @@ app.get('/api/facturas',async(req,res)=>{
         const acctMap={},pmMap={},projMap={};
         // docNumCuentaMap: document_number → account name (from v1 purchases)
         const docNumCuentaMap={};
+        // Helper: extract name from "621001 Arrendamientos y cánones" → "Arrendamientos y cánones"
+        const extractCuentaName = (raw) => {
+          if (!raw) return '';
+          // Remove leading digits (account code) e.g. "621001 " or "62100001 "
+          const m = String(raw).match(/^\d{4,10}\s+(.+)$/);
+          return m ? m[1].trim() : String(raw).trim();
+        };
+
         if(v1PurchRes.status==='fulfilled'&&Array.isArray(v1PurchRes.value)){
           v1PurchRes.value.forEach(doc=>{
-            // v1 document has: docNumber + account (account NAME in v1, not ID)
             const docNum=doc.docNumber||doc.num||doc.ref||'';
-            const cuentaV1=doc.accountName||doc.account||
-              (doc.items&&doc.items[0]&&(doc.items[0].accountName||doc.items[0].account))||
-              (doc.lines&&doc.lines[0]&&(doc.lines[0].accountName||doc.lines[0].account))||'';
-            if(docNum&&cuentaV1) docNumCuentaMap[docNum]=cuentaV1;
+            // v1 returns account as "621001 Nombre" string in these fields:
+            const rawCuenta=doc.account||doc.accountName||doc.accountCode||
+              (doc.items&&doc.items[0]&&(doc.items[0].account||doc.items[0].accountName))||
+              (doc.lines&&doc.lines[0]&&(doc.lines[0].account||doc.lines[0].accountName))||'';
+            const cuentaV1 = extractCuentaName(rawCuenta);
+            if(docNum && cuentaV1) docNumCuentaMap[docNum]=cuentaV1;
+            // Also index by id in case document_number cross-reference fails
+            if(doc.id && cuentaV1) docNumCuentaMap['id:'+doc.id]=cuentaV1;
           });
         }
         if(pmRes.status==='fulfilled'&&Array.isArray(pmRes.value))
@@ -437,10 +448,12 @@ app.get('/api/facturas',async(req,res)=>{
           // acctMap populated from v1 /invoicing/v1/expenseaccounts (when available)
           // Fallback: use line name as cuenta description
           const lineItemName=(inv.lines&&inv.lines[0])?inv.lines[0].name||'':'';
-          // Cuenta: v1 purchase has account name by document number
+          // Cuenta: cross-reference v1 purchase by document_number OR id
           const invDocNum=inv.document_number||inv.docNumber||inv.number||'';
+          const invId=inv.id||inv._id||'';
           const cuentaName=ACCOUNT_NAMES_MAP[lineAccountId]
             ||docNumCuentaMap[invDocNum]
+            ||docNumCuentaMap['id:'+invId]
             ||acctMap[lineAccountId]
             ||'';
           const pmName=pmMap[inv.payment_method_id]||'';
@@ -751,6 +764,32 @@ app.listen(PORT,()=>console.log('✅ Servidor en puerto '+PORT+' — V1 treasury
 // ─── GET /api/debug/accounts ─────────────────────────────────────────
 // Lists all unique expense account IDs found across ALL societies
 // Run once, copy the IDs, fill in ACCOUNT_NAMES_MAP above
+app.get('/api/debug/v1purchase', async (req, res) => {
+  // Shows the raw v1 purchase document to find the account name field
+  const envName = req.query.env || 'API_BALDORIA';
+  const kV1 = apiKeyV1(envName);
+  if (!kV1) return res.json({ error: 'No v1 key for: ' + envName });
+  try {
+    const docs = await v1GetAll('/invoicing/v1/documents?docType=purchase', kV1);
+    const sample = docs.slice(0, 3).map(doc => ({
+      id: doc.id,
+      docNumber: doc.docNumber || doc.num,
+      // Show ALL fields that might contain account name
+      account:     doc.account,
+      accountName: doc.accountName,
+      accountCode: doc.accountCode,
+      category:    doc.category,
+      // Show first line fields
+      line0: doc.items?.[0] || doc.lines?.[0] || null,
+      // All top-level keys
+      allKeys: Object.keys(doc),
+    }));
+    res.json({ envName, count: docs.length, sample });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/debug/accounts', async (req, res) => {
   const allIds = {};
   const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
