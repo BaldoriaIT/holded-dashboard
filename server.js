@@ -535,7 +535,7 @@ app.post('/api/create-remesa',async(req,res)=>{
 // Gets banking account ID from V1 treasury (V2 /banking-accounts not in production yet)
 app.post('/api/mark-paid',async(req,res)=>{
   try{
-    const{transactions,debtorIBAN,fechaRemesa,concepto}=req.body;
+    const{transactions,debtorIBAN,debtorAccountName,fechaRemesa,concepto}=req.body;
     if(!transactions?.length) return res.status(400).json({success:false,error:'Sin transacciones'});
     const execDateObj=fechaRemesa?new Date(fechaRemesa.split('/').reverse().join('-')):new Date();
     const results=[];
@@ -546,32 +546,50 @@ app.post('/api/mark-paid',async(req,res)=>{
       const kV1=apiKeyV1(envName);  // V1 for treasury lookup
       if(!k){results.push({invoiceId:tx.invoiceId,ok:false,error:'Sin API key v2'});continue;}
       try{
-        // Get bank account ID from V1 treasury — match by IBAN then by name
+        // Get bank account ID from V1 treasury — match by IBAN, holdedName, or accountName
         let bankingAccountId='';
+        let accountName='';
         if(kV1){
           try{
             const treasury=await v1Get('/invoicing/v1/treasury',kV1);
             const accs=Array.isArray(treasury)?treasury:[];
             const cleanIBAN=debtorIBAN.replace(/[\s-]/g,'').toUpperCase();
-            // Try IBAN match first
+            // Match 1: by IBAN
             let tAcc=accs.find(a=>(a.iban||'').replace(/[\s-]/g,'').toUpperCase()===cleanIBAN);
-            // Fallback: match by holdedName from ACCOUNTS_MAP
+            // Match 2: by holdedName from ACCOUNTS_MAP
             if(!tAcc){
               const accMapEntry=ACCOUNTS_MAP.find(a=>a.iban.replace(/[\s-]/g,'').toUpperCase()===cleanIBAN);
-              if(accMapEntry){tAcc=accs.find(a=>a.name&&a.name.toUpperCase()===accMapEntry.holdedName.toUpperCase());}
+              if(accMapEntry){
+                tAcc=accs.find(a=>a.name&&a.name.toUpperCase()===accMapEntry.holdedName.toUpperCase());
+              }
+            }
+            // Match 3: by debtorAccountName passed from frontend (request-level)
+            if(!tAcc && debtorAccountName){
+              tAcc=accs.find(a=>a.name&&a.name.toUpperCase()===debtorAccountName.toUpperCase());
             }
             bankingAccountId=tAcc?.id||'';
-            if(!bankingAccountId) console.warn('No treasury account found for IBAN',debtorIBAN,'accs available:',accs.map(a=>a.name+' '+a.iban).join(', '));
+            accountName=tAcc?.name||'';
+            if(!bankingAccountId){
+              console.warn('treasury: no account for IBAN='+debtorIBAN+
+                ' | available: '+accs.map(a=>'"'+a.name+'" '+a.iban).join(', '));
+            } else {
+              console.log('treasury: matched "'+accountName+'" id='+bankingAccountId);
+            }
           }catch(e){console.error('treasury lookup:',e.message);}
         }
-        // POST payment to V2
-        await v2Post('/purchases/'+tx.invoiceId+'/payments',k,{
+        // POST payment — try all known field names for banking account
+        const paymentBody={
           date:isoDate(execDateObj),
           amount:tx.amount,
-          banking_account_id:bankingAccountId,
           concept:concepto||'Pago remesa SEPA',
-          notes:'Cuenta: '+debtorIBAN+' | Fecha: '+isoDate(execDateObj),
-        });
+          notes:'Cuenta: '+accountName+'  IBAN: '+debtorIBAN+' | Fecha: '+isoDate(execDateObj),
+        };
+        if(bankingAccountId){
+          paymentBody.banking_account_id=bankingAccountId;
+          paymentBody.bank_account_id=bankingAccountId;
+          paymentBody.treasury_account_id=bankingAccountId;
+        }
+        await v2Post('/purchases/'+tx.invoiceId+'/payments',k,paymentBody);
         results.push({invoiceId:tx.invoiceId,ok:true});
       }catch(e){
         console.error('mark-paid',tx.invoiceId,e.message);
