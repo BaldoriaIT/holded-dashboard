@@ -1108,15 +1108,13 @@ function renderCF13(){
       <div class="kpi"><div class="kpi-label">Cobros previstos (13 sem)</div><div class="kpi-value num" style="font-size:20px;color:var(--green)">${fmt(totalIngr)}</div></div>
       <div class="kpi"><div class="kpi-label">Pagos previstos (13 sem)</div><div class="kpi-value num" style="font-size:20px;color:var(--red)">−${fmt(totalGast)}</div></div>
     </div>
-    <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
-      <div class="cf-card" style="flex:1;min-width:320px;max-width:560px">
-        <div class="cf-title">Proyección semanal — ${socLabel}</div>
-        ${rowsHtml}
-      </div>
-      <div class="cf-card" style="flex:1;min-width:300px;max-width:420px">
-        <div class="cf-title">Cobros / Pagos por semana</div>
-        <canvas id="cf13-chart" height="280"></canvas>
-      </div>
+    <div class="cf-card" style="margin-bottom:16px">
+      <div class="cf-title">Proyección semanal — ${socLabel}</div>
+      ${rowsHtml}
+    </div>
+    <div class="cf-card" style="width:100%;box-sizing:border-box">
+      <div class="cf-title">Cobros / Pagos por semana — ${socLabel}</div>
+      <canvas id="cf13-chart" style="width:100%;display:block" height="340"></canvas>
     </div>
     <div style="font-size:11px;color:var(--ink4);margin-top:10px">⚠ Las semanas en rojo indican saldo acumulado negativo. Los cobros y pagos son estimaciones basadas en fechas de vencimiento de Holded.</div>`;
   // Render bar chart after DOM update
@@ -1129,8 +1127,10 @@ function renderCF13Chart(weeks) {
   const canvas = document.getElementById('cf13-chart');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  const W = canvas.offsetWidth || 360;
-  const H = 280;
+  // Use full parent width for the chart
+  const parent = canvas.parentElement;
+  const W = (parent ? parent.clientWidth - 32 : 0) || canvas.offsetWidth || 800;
+  const H = 340;
   canvas.width  = W;
   canvas.height = H;
 
