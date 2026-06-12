@@ -170,6 +170,34 @@ app.get('/api/health',(req,res)=>{
 });
 
 // ─── GET /api/debug/facturas ──────────────────────────────────────────
+app.get('/api/debug/lookups',async(req,res)=>{
+  const envName=req.query.env||'API_BALDORIA';
+  const kV1=apiKeyV1(envName);
+  if(!kV1) return res.json({error:'No v1 key for: '+envName});
+  const results={};
+  const toTest=[
+    '/invoicing/v1/expenseaccounts','/accounting/v1/expenseaccounts',
+    '/invoicing/v1/accounts','/accounting/v1/accounts',
+    '/invoicing/v1/paymentmethods','/invoicing/v1/payment-methods',
+    '/invoicing/v1/paymethods',
+    '/projects/v1/projects','/invoicing/v1/projects',
+  ];
+  for(const ep of toTest){
+    try{
+      const r=await fetch('https://api.holded.com/api'+ep+'?limit=3',{
+        headers:{key:kV1,'Accept':'application/json'},signal:AbortSignal.timeout(6000)
+      });
+      const text=await r.text();
+      const isHtml=text.trim().startsWith('<');
+      let parsed=null;try{parsed=JSON.parse(text);}catch(e){}
+      const items=Array.isArray(parsed)?parsed:(parsed&&(parsed.items||parsed.data)||[]);
+      results[ep]={status:r.status,isJson:!isHtml&&!!parsed,itemCount:Array.isArray(items)?items.length:0,
+        firstItem:Array.isArray(items)&&items[0]?{id:items[0].id,name:items[0].name}:null};
+    }catch(e){results[ep]={error:e.message};}
+  }
+  res.json({envName,timestamp:new Date().toISOString(),results});
+});
+
 app.get('/api/debug/facturas',async(req,res)=>{
   const envName=req.query.env||'API_BEATA_PASTA_GROUP';
   const k=apiKey(envName);
@@ -288,11 +316,27 @@ app.get('/api/facturas',async(req,res)=>{
           v2GetAll('/purchases?status=overdue',k),
           v2GetAll('/purchases?status=partial',k),
           // Expense accounts — v1 works, v2 returns 404
-          kV1lookup ? v1GetAll('/invoicing/v1/expenseaccounts',kV1lookup).catch(()=>v1GetAll('/accounting/v1/expenseaccounts',kV1lookup).catch(()=>[])) : Promise.resolve([]),
-          // Payment methods — v1 works, v2 returns 403
-          kV1lookup ? v1GetAll('/invoicing/v1/paymentmethods',kV1lookup).catch(()=>[]) : Promise.resolve([]),
-          // Projects — v1 works, v2 returns 403
-          kV1lookup ? v1GetAll('/projects/v1/projects',kV1lookup).catch(()=>[]) : Promise.resolve([]),
+          // Expense accounts: try multiple v1 paths
+          kV1lookup ? (async()=>{
+            for(const ep of['/invoicing/v1/expenseaccounts','/accounting/v1/expenseaccounts','/invoicing/v1/accounts','/accounting/v1/accounts']){
+              try{const r=await v1GetAll(ep,kV1lookup);if(r&&r.length>0)return r;}catch(e){}
+            }
+            return [];
+          })() : Promise.resolve([]),
+          // Payment methods: try multiple v1 paths
+          kV1lookup ? (async()=>{
+            for(const ep of['/invoicing/v1/paymentmethods','/invoicing/v1/payment-methods','/invoicing/v1/paymethods']){
+              try{const r=await v1GetAll(ep,kV1lookup);if(r&&r.length>0)return r;}catch(e){}
+            }
+            return [];
+          })() : Promise.resolve([]),
+          // Projects: try multiple v1 paths
+          kV1lookup ? (async()=>{
+            for(const ep of['/projects/v1/projects','/invoicing/v1/projects','/projects/v1/list']){
+              try{const r=await v1GetAll(ep,kV1lookup);if(r&&r.length>0)return r;}catch(e){}
+            }
+            return [];
+          })() : Promise.resolve([]),
         ]);
 
         let rawInvoices=[];
@@ -333,9 +377,9 @@ app.get('/api/facturas',async(req,res)=>{
           // Resolve field values
           const lineAccountId=(inv.lines&&inv.lines[0])?inv.lines[0].account||'':'';
           const lineProjectId=(inv.lines&&inv.lines[0])?inv.lines[0].project_id||'':'';
-          const cuentaName=acctMap[lineAccountId]||'';   // empty string if ID not resolved
-          const pmName=pmMap[inv.payment_method_id]||'';  // empty string if not resolved
-          const projName=projMap[lineProjectId]||'';       // empty string if not resolved
+          const cuentaName=acctMap[lineAccountId]||(lineAccountId?'['+lineAccountId.substring(0,8)+'…]':'');
+          const pmName=pmMap[inv.payment_method_id]||'';
+          const projName=projMap[lineProjectId]||'';
 
           // Fix status: if partial but nothing paid → really pending
           let dispStatus=inv.status,dispCode=purchaseStatusCode(inv.status);
