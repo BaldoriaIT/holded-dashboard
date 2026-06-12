@@ -1108,13 +1108,15 @@ function renderCF13(){
       <div class="kpi"><div class="kpi-label">Cobros previstos (13 sem)</div><div class="kpi-value num" style="font-size:20px;color:var(--green)">${fmt(totalIngr)}</div></div>
       <div class="kpi"><div class="kpi-label">Pagos previstos (13 sem)</div><div class="kpi-value num" style="font-size:20px;color:var(--red)">−${fmt(totalGast)}</div></div>
     </div>
-    <div class="cf-card" style="margin-bottom:16px">
-      <div class="cf-title">Proyección semanal — ${socLabel}</div>
-      ${rowsHtml}
-    </div>
-    <div class="cf-card" style="width:100%;box-sizing:border-box">
-      <div class="cf-title">Cobros / Pagos por semana — ${socLabel}</div>
-      <canvas id="cf13-chart" style="width:100%;display:block" height="340"></canvas>
+    <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+      <div class="cf-card" style="flex:1;min-width:340px">
+        <div class="cf-title">Proyección semanal — ${socLabel}</div>
+        ${rowsHtml}
+      </div>
+      <div class="cf-card" style="flex:1;min-width:340px">
+        <div class="cf-title">Cobros / Pagos por semana — ${socLabel}</div>
+        <canvas id="cf13-chart" style="width:100%;display:block" height="420"></canvas>
+      </div>
     </div>
     <div style="font-size:11px;color:var(--ink4);margin-top:10px">⚠ Las semanas en rojo indican saldo acumulado negativo. Los cobros y pagos son estimaciones basadas en fechas de vencimiento de Holded.</div>`;
   // Render bar chart after DOM update
@@ -1130,7 +1132,7 @@ function renderCF13Chart(weeks) {
   // Use full parent width for the chart
   const parent = canvas.parentElement;
   const W = (parent ? parent.clientWidth - 32 : 0) || canvas.offsetWidth || 800;
-  const H = 340;
+  const H = 420;
   canvas.width  = W;
   canvas.height = H;
 
@@ -1564,7 +1566,7 @@ async function executeCreateSEPA() {
     const blob=new Blob([json.xml],{type:'application/xml'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
-    a.href=url; a.download='remesa_SEPA_'+fecha.split('/').join('-')+'.xml'; a.click();
+    a.href=url; a.download='remesa_SEPA_'+(soc||'').replace(/[^a-zA-Z0-9 ]/g,'').replace(/ /g,'_')+'_'+fecha.split('/').join('-')+'.xml'; a.click();
     URL.revokeObjectURL(url);
 
     var remesaInfo =
