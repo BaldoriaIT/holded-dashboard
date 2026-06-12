@@ -58,10 +58,53 @@ const ACCOUNTS_MAP = [
 ];
 
 // ─── ACCOUNT NAMES MAP ───────────────────────────────────────────────
-// Maps Holded expense account IDs → readable names (from /api/debug/accounts)
-// Fill in after running /api/debug/accounts — these never change
-const ACCOUNT_NAMES_MAP = {};
+// Maps Holded expense account IDs → Cuenta name shown in Holded
+// Run /api/debug/accounts to get the list of IDs with sample invoice info
+// Then fill in: { 'ID': 'Nombre cuenta (sin los 8 números)', ... }
+// Example: '69a95cbe4cbc7a4e3d0424ad': 'Pequeño equipamiento terraza'
+// These IDs never change — fill once, works forever.
+const ACCOUNT_NAMES_MAP = {
+  // FILL IN AFTER RUNNING /api/debug/accounts
+};
 
+// ─── TREASURY ACCOUNT IDS (hardcoded from Holded) ───────────────────
+// Maps holdedName → Holded treasury account ID
+// Used for mark-paid banking_account_id resolution (bypasses v1 API)
+const TREASURY_ID_MAP = {
+  'BALDORIA SANTANDER': '6848549e51ebcaed81069faf',
+  'HOLDING SANTANDER': '68485ad483f8a5cc8a010698',
+  'BILBAO SANTANDER': '68485c45c653ee6d650068bc',
+  'PRINCESA SANTANDER': '68485c45c653ee6d650068bd',
+  'GV SANTANDER': '68485da6914a5318b3031b44',
+  'CALLAO SANTANDER': '6889f7560bf83f7cc0050ca2',
+  'BERNABEU SANTANDER': '6889f7560bf83f7cc0050ca2',
+  'GOYA SANTANDER': '68485e63501f9892df09ec46',
+  'FOOD TRUCK SANTANDER': '68485c45c653ee6d650068be',
+  'HOLDING NADA': '6a26e31ea5a671d9850d7d60',
+  'GRAN VIA SANTANDER': '698dad721812eaa0eb0d5c0e',
+  'CALEIDO SANTANDER': '699c286a59d09e48f80827af',
+  'SUR SANTANDER': '699c27c25125eabaaa03c0a3',
+  'BALDORIA SABADELL': '684be55a3dd5a8e3ff04c423',
+  'BALDORIA PRESTAMO': '6a26e11df53951c32604a1ea',
+  'HOLDING SABADELL': '6889f59d6df68fa34d0a29d8',
+  'BILBAO SABADELL': '688794968cc925b1d5008bc9',
+  'PRINCESA SABADELL': '688794968cc925b1d5008bca',
+  'GV SABADELL': '6888f06d0b2c5493260914b9',
+  'CALEIDO SABADELL': '6a26e21993d6edf9bb071126',
+  'SUR SABADELL': '69fda2cf8c4bae5696090640',
+  'BALDORIA RENTING': '684be55a3dd5a8e3ff04c422',
+  'BALDORIA ABANCA': '684855fd959185e20d0d9733',
+  'BILBAO ABANCA': '6889ee7e63ebcd97e201e50c',
+  'PRINCESA ABANCA': '6889ee7e63ebcd97e201e50d',
+  'GOYA ABANCA': '6a26e309f8e927f0370f8482',
+  'GRAN VIA BBVA': '69c2c3442e178a6bed0ed42b',
+  'GV BBVA': '6a26e3dd847e7460e803cef3',
+  'GOYA BBVA': '6942d5d41fcb743ed00130f8',
+  'BALDORIA BANKINTER': '6a26e0d956dbecf575093f89',
+  'BILBAO BANKINTER': '6a26e5c6eb312f15360766c9',
+  'GOYA BANKINTER': '6942dbc972ee4b725b0f3f6c',
+  'SUR CAIXA': '6a26e6bda9ece85c2f0fed06',
+};
 const SOC_API = {};
 ACCOUNTS_MAP.forEach(a => { SOC_API[a.sociedad] = a.apiKeyEnv; });
 
@@ -345,8 +388,8 @@ app.get('/api/facturas',async(req,res)=>{
             }
             return [];
           })() : Promise.resolve([]),
-          // V1 purchases — returns account NAMES (not IDs like v2)
-          kV1lookup ? v1GetAll('/invoicing/v1/documents?docType=purchase',kV1lookup).catch(()=>[]) : Promise.resolve([]),
+          // V1 purchases returns HTML — skip
+          Promise.resolve([]),
         ]);
         // acctRes placeholder (unused, kept for variable count)
         const acctRes={status:'fulfilled',value:[]};
@@ -659,37 +702,22 @@ app.post('/api/mark-paid',async(req,res)=>{
       const kV1=apiKeyV1(envName);
       if(!k){results.push({invoiceId:tx.invoiceId,ok:false,error:'Sin API key para sociedad: '+(tx.sociedad||'desconocida')});continue;}
       try{
-        // Get bank account ID from V1 treasury — match by IBAN, holdedName, or accountName
+        // Get bank account ID — use hardcoded TREASURY_ID_MAP (bypasses API rate limits)
         let bankingAccountId='';
         let accountName='';
-        if(kV1){
-          try{
-            const treasury=await v1Get('/invoicing/v1/treasury',kV1);
-            const accs=Array.isArray(treasury)?treasury:[];
-            const cleanIBAN=debtorIBAN.replace(/[\s-]/g,'').toUpperCase();
-            // Match 1: by IBAN
-            let tAcc=accs.find(a=>(a.iban||'').replace(/[\s-]/g,'').toUpperCase()===cleanIBAN);
-            // Match 2: by holdedName from ACCOUNTS_MAP
-            if(!tAcc){
-              const accMapEntry=ACCOUNTS_MAP.find(a=>a.iban.replace(/[\s-]/g,'').toUpperCase()===cleanIBAN);
-              if(accMapEntry){
-                tAcc=accs.find(a=>a.name&&a.name.toUpperCase()===accMapEntry.holdedName.toUpperCase());
-              }
-            }
-            // Match 3: by debtorAccountName passed from frontend (request-level)
-            if(!tAcc && debtorAccountName){
-              tAcc=accs.find(a=>a.name&&a.name.toUpperCase()===debtorAccountName.toUpperCase());
-            }
-            bankingAccountId=tAcc?.id||'';
-            accountName=tAcc?.name||'';
-            if(!bankingAccountId){
-              console.warn('treasury: no account for IBAN='+debtorIBAN+
-                ' | available: '+accs.map(a=>'"'+a.name+'" '+a.iban).join(', '));
-            } else {
-              console.log('treasury: matched "'+accountName+'" id='+bankingAccountId);
-            }
-          }catch(e){console.error('treasury lookup:',e.message);}
+        // Find the holdedName for this IBAN from ACCOUNTS_MAP
+        const cleanIBAN=debtorIBAN.replace(/[\s-]/g,'').toUpperCase();
+        const accEntry=ACCOUNTS_MAP.find(a=>a.iban.replace(/[\s-]/g,'').toUpperCase()===cleanIBAN);
+        if(accEntry){
+          accountName=accEntry.holdedName;
+          bankingAccountId=TREASURY_ID_MAP[accEntry.holdedName]||'';
         }
+        // Fallback: match by debtorAccountName if IBAN lookup failed
+        if(!bankingAccountId && debtorAccountName){
+          bankingAccountId=TREASURY_ID_MAP[debtorAccountName]||'';
+          accountName=debtorAccountName;
+        }
+        console.log('treasury: "'+accountName+'" id='+bankingAccountId+' iban='+debtorIBAN);
         // POST payment — try all known field names for banking account
         const paymentBody={
           date:isoDate(execDateObj),
@@ -802,7 +830,12 @@ app.get('/api/debug/accounts', async (req, res) => {
       purchases.forEach(inv => {
         if (inv.lines) inv.lines.forEach(l => {
           if (l.account) {
-            if (!allIds[l.account]) allIds[l.account] = { count: 0, societies: [], sampleLineName: l.name || '' };
+            if (!allIds[l.account]) allIds[l.account] = {
+              count: 0, societies: [],
+              sampleInvoiceNum: inv.document_number||'',
+              sampleLineName: l.name||'',
+              currentMapping: ACCOUNT_NAMES_MAP[l.account]||'⚠ NOT MAPPED',
+            };
             allIds[l.account].count++;
             if (!allIds[l.account].societies.includes(soc)) allIds[l.account].societies.push(soc);
           }
@@ -813,7 +846,15 @@ app.get('/api/debug/accounts', async (req, res) => {
   }
   const sorted = Object.entries(allIds)
     .sort((a, b) => b[1].count - a[1].count)
-    .map(([id, info]) => ({ id, count: info.count, societies: info.societies, sampleLineName: info.sampleLineName }));
-  res.json({ total: sorted.length, accounts: sorted,
-    instructions: 'Add entries to ACCOUNT_NAMES_MAP in server.js: { "ID": "Nombre cuenta" }' });
+    .map(([id, info]) => ({
+      id, count: info.count, societies: info.societies,
+      sampleInvoiceNum: info.sampleInvoiceNum,
+      sampleLineName: info.sampleLineName,
+      currentMapping: info.currentMapping,
+    }));
+  res.json({
+    total: sorted.length,
+    accounts: sorted,
+    howToFix: 'In server.js, find ACCOUNT_NAMES_MAP and add: "' + (sorted[0]?.id||'ID') + '": "Nombre sin los numeros"',
+  });
 });
