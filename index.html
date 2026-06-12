@@ -478,7 +478,7 @@ canvas.pie-canvas{max-width:180px;max-height:180px}
     <div class="section-hd">
       <div class="section-title">Previsión de Cash Flow — 13 semanas</div>
       <div style="display:flex;gap:8px;align-items:center">
-        <select id="cf-sociedad-select" class="sepa-select" style="width:220px" onchange="renderCF13()">
+        <select id="cf-sociedad-select" class="sepa-select" style="width:220px" onchange="setFilter(this.value==='all'?'all':this.value);renderCF13();">
           <option value="all">Todas las sociedades</option>
         </select>
         <button class="btn btn-outline btn-sm" onclick="loadFacturas()">🔄 Actualizar facturas</button>
@@ -707,7 +707,15 @@ function buildSidebarFilters(){
   socs.forEach(s=>{const col=SOC_COLORS[s]||'#888';html+=`<button class="sb-filter-btn ${currentFilter===s?'active':''}" onclick="setFilter('${s.replace(/'/g,"\\'")}')"><div class="sb-dot" style="background:${col}"></div>${s}</button>`});
   document.getElementById('sb-filters').innerHTML=html;
 }
-function setFilter(f){currentFilter=f;buildSidebarFilters();render()}
+function setFilter(f){
+  currentFilter=f;
+  buildSidebarFilters();
+  render();
+  // Sync CF13 select dropdown
+  const cfSel=document.getElementById('cf-sociedad-select');
+  if(cfSel) cfSel.value = f==='all'?'all':f;
+  if(currentTab==='cf13') renderCF13();
+}
 function getFiltered(){return currentFilter==='all'?DATA:DATA.filter(d=>d.sociedad===currentFilter)}
 
 // ── TAB SWITCH ──
@@ -1032,7 +1040,12 @@ function findAccountName(iban){
 
 // ── CF 13 SEMANAS ──
 function renderCF13(){
-  const socFilter=document.getElementById('cf-sociedad-select')?.value||'all';
+  // Sync with sidebar currentFilter (set by setFilter()) AND cf-sociedad-select dropdown
+  const selVal = document.getElementById('cf-sociedad-select')?.value||'all';
+  const socFilter = (currentFilter && currentFilter !== 'all') ? currentFilter : selVal;
+  // Keep the dropdown in sync
+  const cfSelEl = document.getElementById('cf-sociedad-select');
+  if (cfSelEl && cfSelEl.value !== socFilter) cfSelEl.value = socFilter;
   const facts=socFilter==='all'?FACTURAS_ALL:FACTURAS_ALL.filter(f=>f.sociedad===socFilter);
   if(facts.length===0){document.getElementById('cf13-content').innerHTML=`<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px">📅</div><div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin datos de facturas</div><div style="font-size:13px;margin-top:6px">Carga las facturas desde Holded</div><button class="btn btn-dark" style="margin:16px auto 0;display:inline-flex" onclick="loadFacturas()">Cargar facturas</button></div>`;return;}
 
@@ -1072,14 +1085,29 @@ function renderCF13(){
 
   const totalIngr=0;
   const totalGast=facts.reduce((s,f)=>s+(f.pendiente||0),0);
+  const vencidas  = facts.filter(f=>daysDiff(f.vencimiento)<0).reduce((s,f)=>s+(f.pendiente||0),0);
+  const proximas7 = facts.filter(f=>{const d=daysDiff(f.vencimiento);return d>=0&&d<=7;}).reduce((s,f)=>s+(f.pendiente||0),0);
+  const nVenc     = facts.filter(f=>daysDiff(f.vencimiento)<0).length;
+  const nProx     = facts.filter(f=>{const d=daysDiff(f.vencimiento);return d>=0&&d<=7;}).length;
+  const socLabel  = socFilter==='all'?'Todas las sociedades':socFilter;
   document.getElementById('cf13-content').innerHTML=`
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
-      <div class="kpi"><div class="kpi-label">Saldo actual</div><div class="kpi-value pos num" style="font-size:20px">${fmt(currentCash)}</div></div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr) repeat(3,1fr);gap:10px;margin-bottom:16px;flex-wrap:wrap">
+      <div class="kpi ${vencidas>0?'warn':''}">
+        <div class="kpi-label">Facturas Vencidas</div>
+        <div class="kpi-value num" style="font-size:20px;color:var(--red)">${vencidas>0?fmt(vencidas):'—'}</div>
+        <div class="kpi-sub">${nVenc} facturas · ${socLabel}</div>
+      </div>
+      <div class="kpi ${proximas7>0?'warn':''}">
+        <div class="kpi-label">Vence en 7 días</div>
+        <div class="kpi-value num" style="font-size:20px;color:var(--amber)">${proximas7>0?fmt(proximas7):'—'}</div>
+        <div class="kpi-sub">${nProx} facturas · ${socLabel}</div>
+      </div>
+      <div class="kpi"><div class="kpi-label">Saldo actual</div><div class="kpi-value pos num" style="font-size:20px">${fmt(currentCash)}</div><div class="kpi-sub">${socLabel}</div></div>
       <div class="kpi"><div class="kpi-label">Cobros previstos (13 sem)</div><div class="kpi-value num" style="font-size:20px;color:var(--green)">${fmt(totalIngr)}</div></div>
       <div class="kpi"><div class="kpi-label">Pagos previstos (13 sem)</div><div class="kpi-value num" style="font-size:20px;color:var(--red)">−${fmt(totalGast)}</div></div>
     </div>
     <div class="cf-card" style="max-width:900px">
-      <div class="cf-title">Proyección semanal — ${socFilter==='all'?'Consolidado':socFilter}</div>
+      <div class="cf-title">Proyección semanal — ${socLabel}</div>
       ${rowsHtml}
     </div>
     <div style="font-size:11px;color:var(--ink4);margin-top:10px">⚠ Las semanas en rojo indican saldo acumulado negativo. Los cobros y pagos son estimaciones basadas en fechas de vencimiento de Holded.</div>`;
@@ -1430,7 +1458,7 @@ function openBuildSEPA() {
     <button class="btn btn-rust" id="btn-exec-sepa">⚡ Crear XML y registrar en Holded</button>`;
   window._sepaParams = {soc, cuenta, concep, fecha};
   document.getElementById('btn-exec-sepa').onclick = () => executeCreateSEPA();
-  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-overlay').style.display='flex';
 }
 
 async function executeCreateSEPA() {
