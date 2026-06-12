@@ -477,14 +477,14 @@ canvas.pie-canvas{max-width:180px;max-height:180px}
   <div class="tab-panel" id="panel-cf13">
     <div class="section-hd">
       <div class="section-title">Previsión de Cash Flow — 13 semanas</div>
-      <button class="btn btn-outline btn-sm" onclick="loadFacturas()">🔄 Actualizar</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="cf-sociedad-select" class="sepa-select" style="width:220px" onchange="renderCF13()">
+          <option value="all">Todas las sociedades</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="loadFacturas()">🔄 Actualizar facturas</button>
+      </div>
     </div>
-    <div style="display:flex;gap:0;min-height:500px">
-      <!-- Sidebar tabs -->
-      <div id="cf13-soc-tabs" style="width:168px;flex-shrink:0;border-right:1px solid var(--border);padding:8px 0;background:var(--cream)"></div>
-      <!-- Main content -->
-      <div id="cf13-content" style="flex:1;min-width:0;padding:0 20px"></div>
-    </div>
+    <div id="cf13-content"></div>
   </div>
 
   
@@ -751,11 +751,7 @@ function render(){
   else if(currentTab==='restaurante')renderRestaurante(rows);
   else if(currentTab==='graficos')renderGraficos(rows);
   else if(currentTab==='traspasos')renderTraspasos();
-  else if(currentTab==='cf13'){
-    const mainVal=document.getElementById('filter-sociedad')?.value||'';
-    cf13SelectedSoc=mainVal||'all';
-    renderCF13();
-  }
+  else if(currentTab==='cf13')renderCF13();
   else if(currentTab==='facturas')renderFacturasTable();
   else if(currentTab==='remesas')renderRemesas();
 }
@@ -1035,460 +1031,108 @@ function findAccountName(iban){
 }
 
 // ── CF 13 SEMANAS ──
-let cf13SelectedSoc = 'all';
+function renderCF13(){
+  const socFilter=document.getElementById('cf-sociedad-select')?.value||'all';
+  const facts=socFilter==='all'?FACTURAS_ALL:FACTURAS_ALL.filter(f=>f.sociedad===socFilter);
+  if(facts.length===0){document.getElementById('cf13-content').innerHTML=`<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px">📅</div><div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin datos de facturas</div><div style="font-size:13px;margin-top:6px">Carga las facturas desde Holded</div><button class="btn btn-dark" style="margin:16px auto 0;display:inline-flex" onclick="loadFacturas()">Cargar facturas</button></div>`;return;}
 
-function renderCF13Tabs() {
-  const tabsEl = document.getElementById('cf13-soc-tabs');
-  if (!tabsEl) return;
-  const socs = [...new Set(FACTURAS_ALL.map(f=>f.sociedad))].sort();
-  var mkBtn = function(val, label, color) {
-    var active = cf13SelectedSoc === val;
-    return '<div onclick="setCF13Soc(\'' + val + '\')" style="cursor:pointer;padding:9px 14px;font-size:12px;' +
-      'border-left:3px solid ' + (active ? (color||'var(--rust)') : 'transparent') + ';' +
-      'background:' + (active ? 'white' : 'transparent') + ';' +
-      'color:' + (active ? 'var(--ink)' : 'var(--ink3)') + ';' +
-      'font-weight:' + (active ? 500 : 400) + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
-      label + '</div>';
-  };
-  var html = mkBtn('all', '🏢 Todas', 'var(--rust)');
-  socs.forEach(function(s) {
-    var col = (DATA.find(function(d){return d.sociedad===s;})||{}).color || '#888';
-    html += mkBtn(s, s, col);
-  });
-  tabsEl.innerHTML = html;
-}
-
-function setCF13Soc(soc) {
-  cf13SelectedSoc = soc;
-  var mainSel = document.getElementById('filter-sociedad');
-  if (mainSel) { mainSel.value = soc === 'all' ? '' : soc; applyFilters(); }
-  renderCF13Tabs();
-  renderCF13Body();
-}
-
-function renderCF13() {
-  renderCF13Tabs();
-  renderCF13Body();
-}
-
-function renderCF13Body() {
-  var socFilter = cf13SelectedSoc;
-  var facts = socFilter==='all' ? FACTURAS_ALL : FACTURAS_ALL.filter(function(f){return f.sociedad===socFilter;});
-  var contentEl = document.getElementById('cf13-content');
-  if (!contentEl) return;
-
-  if (FACTURAS_ALL.length === 0) {
-    contentEl.innerHTML = '<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px">📅</div><div style="font-family:var(--font-display);font-size:20px;margin-top:12px">Sin datos de facturas</div><div style="font-size:13px;margin-top:6px">Carga las facturas desde Holded</div><button class="btn btn-dark" style="margin:16px auto 0;display:inline-flex" onclick="loadFacturas()">Cargar facturas</button></div>';
-    return;
-  }
-
-  var vencidas   = facts.filter(function(f){return daysDiff(f.vencimiento)<0;}).reduce(function(s,f){return s+(f.pendiente||0);},0);
-  var proximas7  = facts.filter(function(f){return daysDiff(f.vencimiento)>=0&&daysDiff(f.vencimiento)<=7;}).reduce(function(s,f){return s+(f.pendiente||0);},0);
-  var currentCash= DATA.filter(function(d){return socFilter==='all'||d.sociedad===socFilter;}).reduce(function(s,r){return s+(r.saldo||0);},0);
-
-  var weeks=[];
-  var startDate=new Date(); startDate.setHours(0,0,0,0);
-  for (var w=0;w<13;w++) {
-    var wStart=new Date(startDate); wStart.setDate(wStart.getDate()+w*7);
-    var wEnd=new Date(wStart); wEnd.setDate(wEnd.getDate()+6);
+  // Group by week (13 weeks from today)
+  const weeks=[];
+  const startDate=new Date();startDate.setHours(0,0,0,0);
+  for(let w=0;w<13;w++){
+    const wStart=new Date(startDate);wStart.setDate(wStart.getDate()+w*7);
+    const wEnd=new Date(wStart);wEnd.setDate(wEnd.getDate()+6);
     weeks.push({start:wStart,end:wEnd,ingresos:[],gastos:[]});
   }
-  facts.forEach(function(f){
-    var d=new Date(f.vencimiento); var amt=f.pendiente||0;
-    var placed=false;
-    weeks.forEach(function(wk){if(d>=wk.start&&d<=wk.end){wk.gastos.push(amt);placed=true;}});
-    if(!placed&&d<weeks[0].start) weeks[0].gastos.push(amt);
+  // Add past (vencidas) to week 0
+  facts.forEach(f=>{
+    const d=new Date(f.vencimiento);const amt=f.pendiente||0;
+    let placed=false;
+    weeks.forEach(w=>{if(d>=w.start&&d<=w.end){w.gastos.push(amt);placed=true;}});
+    if(!placed&&d<weeks[0].start){if(f.type==='income')weeks[0].ingresos.push(amt);else weeks[0].gastos.push(amt);}
   });
 
-  var acum=currentCash;
-  var rowsHtml='<div class="cf-week-row cf-week-head"><div>Semana</div><div style="text-align:right">Cobros</div><div style="text-align:right">Pagos</div><div style="text-align:right">Neto</div><div style="text-align:right">Saldo acum.</div></div>';
-  weeks.forEach(function(wk,i){
-    var ingr=wk.ingresos.reduce(function(s,v){return s+v;},0);
-    var gast=wk.gastos.reduce(function(s,v){return s+v;},0);
-    var neto=ingr-gast; acum+=neto;
-    var cls=acum<0?'negative':neto>=0?'positive':'';
-    rowsHtml+='<div class="cf-week-row '+cls+'">'+
-      '<div style="font-size:11px;color:var(--ink3)">'+(i===0?'Vencidas':weekLabel(wk.start))+'</div>'+
-      '<div class="cf-num pos">'+(ingr>0?'+'+fmt(ingr):'—')+'</div>'+
-      '<div class="cf-num neg">'+(gast>0?'−'+fmt(gast):'—')+'</div>'+
-      '<div class="cf-num '+(neto>=0?'pos':'neg')+'">'+(neto>=0?'+':'')+fmt(neto)+'</div>'+
-      '<div class="cf-num '+(acum<0?'neg cf-acum':'')+'">'+(fmt(acum))+'</div>'+
-    '</div>';
+  // Build saldo acumulado
+  const currentCash=DATA.filter(d=>socFilter==='all'||d.sociedad===socFilter).reduce((s,r)=>s+(r.saldo||0),0);
+  let acum=currentCash;
+  let rowsHtml=`<div class="cf-week-row cf-week-head"><div>Semana</div><div style="text-align:right">Cobros</div><div style="text-align:right">Pagos</div><div style="text-align:right">Neto</div><div style="text-align:right">Saldo acum.</div></div>`;
+  weeks.forEach((w,i)=>{
+    const ingr=w.ingresos.reduce((s,v)=>s+v,0);
+    const gast=w.gastos.reduce((s,v)=>s+v,0);
+    const neto=ingr-gast;acum+=neto;
+    const cls=acum<0?'negative':neto>=0?'positive':'';
+    rowsHtml+=`<div class="cf-week-row ${cls}">
+      <div style="font-size:11px;color:var(--ink3)">${i===0?'Vencidas':weekLabel(w.start)}</div>
+      <div class="cf-num pos">${ingr>0?'+'+fmt(ingr):'—'}</div>
+      <div class="cf-num neg">${gast>0?'−'+fmt(gast):'—'}</div>
+      <div class="cf-num ${neto>=0?'pos':'neg'}">${neto>=0?'+':''} ${fmt(neto)}</div>
+      <div class="cf-num ${acum<0?'neg cf-acum':''}">${fmt(acum)}</div>
+    </div>`;
   });
 
-  var totalGast=weeks.reduce(function(s,wk){return s+wk.gastos.reduce(function(a,v){return a+v;},0);},0);
-  var socTitle = socFilter==='all' ? 'Todas las sociedades' : socFilter;
-
-  contentEl.innerHTML=
-    '<div style="display:flex;gap:12px;margin:16px 0;flex-wrap:wrap">'+
-      '<div class="kpi '+(vencidas>0?'warn':'')+'">'+
-        '<div class="kpi-label">Facturas Vencidas</div>'+
-        '<div class="kpi-value num" style="font-size:19px;color:var(--red)">'+(vencidas>0?fmt(vencidas):'—')+'</div>'+
-        '<div class="kpi-sub">'+facts.filter(function(f){return daysDiff(f.vencimiento)<0;}).length+' facturas · '+socTitle+'</div>'+
-      '</div>'+
-      '<div class="kpi '+(proximas7>0?'warn':'')+'">'+
-        '<div class="kpi-label">Vence en 7 días</div>'+
-        '<div class="kpi-value num" style="font-size:19px;color:var(--amber)">'+(proximas7>0?fmt(proximas7):'—')+'</div>'+
-        '<div class="kpi-sub">'+facts.filter(function(f){return daysDiff(f.vencimiento)>=0&&daysDiff(f.vencimiento)<=7;}).length+' facturas</div>'+
-      '</div>'+
-      '<div class="kpi">'+
-        '<div class="kpi-label">Saldo actual</div>'+
-        '<div class="kpi-value num" style="font-size:19px">'+fmt(currentCash)+'</div>'+
-        '<div class="kpi-sub">'+socTitle+'</div>'+
-      '</div>'+
-      '<div class="kpi">'+
-        '<div class="kpi-label">Pagos previstos 13 sem.</div>'+
-        '<div class="kpi-value num" style="font-size:19px;color:var(--rust)">'+fmt(totalGast)+'</div>'+
-        '<div class="kpi-sub">'+facts.length+' facturas pendientes</div>'+
-      '</div>'+
-    '</div>'+
-    '<div class="cf-grid">'+rowsHtml+'</div>'+
-    '<div style="font-size:11px;color:var(--ink4);margin-top:10px">⚠ Las semanas en rojo indican saldo acumulado negativo.</div>';
-}
-
-
-// ── AUTO REFRESH ──
-function toggleAuto(){
-  autoEnabled=!autoEnabled;const btn=document.getElementById('auto-btn');
-  if(autoEnabled){autoInterval=setInterval(()=>{loadData();},60000);btn.style.background='var(--green)';btn.style.color='white';btn.textContent='⏱ ON·60s';}
-  else{clearInterval(autoInterval);btn.style.background='';btn.style.color='';btn.textContent='⏱ Auto';}
-}
-
-// ── FILTER / SIDEBAR ──
-function buildSidebarFilters(){
-  const socs=[...new Set(DATA.map(d=>d.sociedad))];
-  let html=`<button class="sb-filter-btn ${currentFilter==='all'?'active':''}" onclick="setFilter('all')"><div class="sb-dot" style="background:var(--rust)"></div>Todas</button>`;
-  socs.forEach(s=>{const col=SOC_COLORS[s]||'#888';html+=`<button class="sb-filter-btn ${currentFilter===s?'active':''}" onclick="setFilter('${s.replace(/'/g,"\\'")}')"><div class="sb-dot" style="background:${col}"></div>${s}</button>`});
-  document.getElementById('sb-filters').innerHTML=html;
-}
-function setFilter(f){currentFilter=f;buildSidebarFilters();render()}
-function getFiltered(){return currentFilter==='all'?DATA:DATA.filter(d=>d.sociedad===currentFilter)}
-
-// ── TAB SWITCH ──
-function switchTab(tab){
-  currentTab=tab;
-  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
-  document.querySelectorAll('.sb-item').forEach(b=>b.classList.remove('active'));
-  document.getElementById('panel-'+tab).classList.add('active');
-  document.getElementById('tab-'+tab).classList.add('active');
-  const sbMap={sociedad:0,banco:1,restaurante:2,graficos:3,traspasos:4,cf13:5,facturas:6,remesas:7};
-  document.querySelectorAll('.sb-item')[sbMap[tab]]?.classList.add('active');
-  render();
-  if(tab==='facturas'&&FACTURAS_ALL.length===0)loadFacturas();
-  if(tab==='remesas'&&REMESAS_DATA.length===0)loadRemesas();
-}
-
-// ── COLLAPSE ──
-function toggleCard(id){
-  collapseState[id]=!collapseState[id];
-  const rows=document.getElementById('rows-'+id);
-  const icon=document.getElementById('icon-'+id);
-  if(rows)rows.classList.toggle('collapsed',collapseState[id]);
-  if(icon)icon.classList.toggle('open',!collapseState[id]);
-}
-function toggleBanco(id){
-  const key='banco-'+id;collapseState[key]=!collapseState[key];
-  const tbl=document.getElementById('table-'+id);const icon=document.getElementById('bicon-'+id);
-  if(tbl)tbl.classList.toggle('collapsed',collapseState[key]);
-  if(icon)icon.classList.toggle('open',!collapseState[key]);
+  const totalIngr=0;
+  const totalGast=facts.reduce((s,f)=>s+(f.pendiente||0),0);
+  document.getElementById('cf13-content').innerHTML=`
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+      <div class="kpi"><div class="kpi-label">Saldo actual</div><div class="kpi-value pos num" style="font-size:20px">${fmt(currentCash)}</div></div>
+      <div class="kpi"><div class="kpi-label">Cobros previstos (13 sem)</div><div class="kpi-value num" style="font-size:20px;color:var(--green)">${fmt(totalIngr)}</div></div>
+      <div class="kpi"><div class="kpi-label">Pagos previstos (13 sem)</div><div class="kpi-value num" style="font-size:20px;color:var(--red)">−${fmt(totalGast)}</div></div>
+    </div>
+    <div class="cf-card" style="max-width:900px">
+      <div class="cf-title">Proyección semanal — ${socFilter==='all'?'Consolidado':socFilter}</div>
+      ${rowsHtml}
+    </div>
+    <div style="font-size:11px;color:var(--ink4);margin-top:10px">⚠ Las semanas en rojo indican saldo acumulado negativo. Los cobros y pagos son estimaciones basadas en fechas de vencimiento de Holded.</div>`;
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// RENDER
+// FACTURAS & SEPA
 // ═══════════════════════════════════════════════════════════════════
-function render(){
-  const rows=getFiltered();
-  renderKPIs(rows);
-  if(currentTab==='sociedad')renderSociedad(rows);
-  else if(currentTab==='banco')renderBanco(rows);
-  else if(currentTab==='restaurante')renderRestaurante(rows);
-  else if(currentTab==='graficos')renderGraficos(rows);
-  else if(currentTab==='traspasos')renderTraspasos();
-  else if(currentTab==='cf13'){
-    const mainVal=document.getElementById('filter-sociedad')?.value||'';
-    cf13SelectedSoc=mainVal||'all';
-    renderCF13();
+let FACTURAS_ALL = [];
+let FACTURAS_FILTERED = [];
+let estadoFilter = 'all';
+
+async function loadFacturas(silent=false) {
+  if (!silent) {
+    const el = document.getElementById('facturas-content');
+    if (el) el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--ink4)"><div style="font-size:28px">⏳</div><div style="margin-top:10px;font-size:13px">Cargando facturas desde Holded...</div></div>';
   }
-  else if(currentTab==='facturas')renderFacturasTable();
-  else if(currentTab==='remesas')renderRemesas();
-}
+  try {
+    const res = await fetch(`${API_BASE}/api/facturas`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    FACTURAS_ALL = json.data || [];
 
-// ── KPIs ──
-function renderKPIs(rows){
-  const total=rows.reduce((s,r)=>s+(r.saldo||0),0);
-  const socs=[...new Set(rows.map(r=>r.sociedad))];const banks=[...new Set(rows.map(r=>r.banco))];
-  const maxV=Math.max(...rows.map(r=>r.saldo||0));const topRow=rows.find(r=>r.saldo===maxV);
-  const vencidas=FACTURAS_ALL.filter(f=>daysDiff(f.vencimiento)<0).reduce((s,f)=>s+(f.pendiente||0),0);
-  const proximas=FACTURAS_ALL.filter(f=>daysDiff(f.vencimiento)>=0&&daysDiff(f.vencimiento)<=7).reduce((s,f)=>s+(f.pendiente||0),0);
-  document.getElementById('kpi-grid').innerHTML=`
-    <div class="kpi accent"><div class="kpi-label">Saldo Total</div><div class="kpi-value pos num">${fmt(total)}</div><div class="kpi-sub">${rows.length} cuentas · ${socs.length} sociedades</div></div>
-    <div class="kpi"><div class="kpi-label">Mayor posición</div><div class="kpi-value num" style="font-size:19px">${fmtK(maxV)}</div><div class="kpi-sub">${topRow?.sociedad||'—'} · ${topRow?.restaurante||'—'}</div></div>
-    <div class="kpi"><div class="kpi-label">Bancos activos</div><div class="kpi-value num">${banks.length}</div><div class="kpi-sub">${rows.filter(r=>(r.saldo||0)>0).length} cuentas con saldo</div></div>
-    <div class="kpi ${vencidas>0?'danger':''}"><div class="kpi-label">Facturas vencidas</div><div class="kpi-value neg num" style="font-size:19px">${vencidas>0?fmt(vencidas):'—'}</div><div class="kpi-sub">${FACTURAS_ALL.filter(f=>daysDiff(f.vencimiento)<0).length} facturas</div></div>
-    <div class="kpi ${proximas>0?'warn':''}"><div class="kpi-label">Vence en 7 días</div><div class="kpi-value num" style="font-size:19px;color:var(--amber)">${proximas>0?fmt(proximas):'—'}</div><div class="kpi-sub">${FACTURAS_ALL.filter(f=>daysDiff(f.vencimiento)>=0&&daysDiff(f.vencimiento)<=7).length} facturas</div></div>`;
-}
+    // Update vencidas badge
+    const nVenc = FACTURAS_ALL.filter(f => daysDiff(f.vencimiento) < 0).length;
+    const badge = document.getElementById('badge-vencidas');
+    if (badge) { badge.textContent = nVenc; badge.style.display = nVenc > 0 ? 'inline-flex' : 'none'; }
 
-// ── SOCIEDAD ──
-function renderSociedad(rows){
-  const order=SOC_ORDER;let html='',count=0;
-  order.forEach(soc=>{
-    const sRows=rows.filter(r=>r.sociedad===soc);if(!sRows.length)return;count++;
-    const id='soc-'+soc.replace(/\W/g,'_');
-    const isOpen=collapseState[id]===undefined?true:!collapseState[id];
-    const total=sRows.reduce((s,r)=>s+(r.saldo||0),0);
-    const col=SOC_COLORS[soc]||'#888';const banks=[...new Set(sRows.map(r=>r.banco))];
-    const textCol=needsDark(col)?'#1A1814':col;
-    let rowsHtml='';
-    sRows.forEach((r,i)=>{
-      if(i>0)rowsHtml+=`<div class="bank-row-divider"></div>`;
-      // alert chip
-      const facV=FACTURAS_ALL.filter(f=>f.sociedad===soc&&daysDiff(f.vencimiento)<0).reduce((s,f)=>s+(f.pendiente||0),0);
-      const alertHtml=facV>0?'<div class="alert-chip red" style="margin-top:2px">⚠ '+fmt(facV)+' vencido</div>':'';
-      rowsHtml+=`<div class="bank-row">
-        ${bankLogoHtml(r.banco)}
-        <div class="bank-info">
-          <div class="bank-name">${r.banco}</div>
-          <div class="bank-iban">${ibanShort(r.iban)}</div>
-          <div class="bank-holded">${r.holdedName||''}</div>
-          ${alertHtml}
-        </div>
-        <div style="text-align:right">
-          <div class="bank-amount ${(r.saldo||0)===0?'zero':''} num">${r.saldo===null?'⚠':fmt(r.saldo)}</div>
-        </div>
-      </div>`;
-    });
-    const maxH=sRows.length*56+20;
-    html+=`<div class="entity-card" style="animation-delay:${count*0.035}s">
-      <div class="entity-header" onclick="toggleCard('${id}')">
-        <div class="entity-accent-bar" style="background:${col}"></div>
-        <div class="entity-name-wrap">
-          <div class="entity-name">${soc}</div>
-          <div class="entity-tag" style="background:${col}22;color:${textCol}">${banks.join(' · ')}</div>
-        </div>
-        <div style="text-align:right;margin-right:6px">
-          <div class="entity-total-amount num">${fmt(total)}</div>
-          <div class="entity-total-label">${sRows.length} cuenta${sRows.length>1?'s':''}</div>
-        </div>
-        <div class="collapse-icon ${isOpen?'open':''}" id="icon-${id}">▼</div>
-      </div>
-      <div class="bank-rows ${isOpen?'':'collapsed'}" id="rows-${id}" style="max-height:${maxH}px">${rowsHtml}</div>
-    </div>`;
-  });
-  document.getElementById('grid-sociedad').innerHTML=html;
-  document.getElementById('meta-sociedad').textContent=`${count} sociedades`;
-}
-
-// ── BANCO (grouped) ──
-function renderBanco(rows){
-  let html='';
-  BANK_ORDER.forEach((banco,bi)=>{
-    const bRows=rows.filter(r=>r.banco===banco);if(!bRows.length)return;
-    const total=bRows.reduce((s,r)=>s+(r.saldo||0),0);
-    const bid='banco-'+banco.replace(/\W/g,'_');
-    const isOpen=collapseState[bid]===undefined?true:!collapseState[bid];
-    // Group by restaurante
-    const restMap={};
-    bRows.forEach(r=>{if(!restMap[r.restaurante])restMap[r.restaurante]={sociedad:r.sociedad,cuentas:[]};restMap[r.restaurante].cuentas.push(r);});
-    let tableRows='';
-    Object.entries(restMap).sort(([a],[b])=>a.localeCompare(b)).forEach(([rest,g])=>{
-      const totalR=g.cuentas.reduce((s,r)=>s+(r.saldo||0),0);
-      const col=SOC_COLORS[g.sociedad]||'#888';
-      if(g.cuentas.length===1){
-        const r=g.cuentas[0];
-        tableRows+=`<div class="bt-row">
-          <div class="bt-cell" style="font-weight:500"><span class="bt-tag" style="background:${col}"></span>${g.sociedad}</div>
-          <div class="bt-cell">${rest}</div>
-          <div class="bt-cell" style="font-family:var(--font-mono);font-size:10px;color:var(--ink4)">${ibanShort(r.iban)}</div>
-          <div class="bt-saldo num">${r.saldo===null?'—':fmt(r.saldo)}</div>
-          <div class="bt-saldo num" style="color:var(--ink4);font-size:11px">—</div>
-        </div>`;
-      }else{
-        tableRows+=`<div class="bt-row" style="background:rgba(26,24,20,0.02)">
-          <div class="bt-cell" style="font-weight:500"><span class="bt-tag" style="background:${col}"></span>${g.sociedad}</div>
-          <div class="bt-cell" style="font-weight:600">${rest} <span style="font-size:9.5px;color:var(--ink4);font-weight:400">(${g.cuentas.length})</span></div>
-          <div class="bt-cell" style="font-size:9.5px;color:var(--ink4)">múltiples IBANs</div>
-          <div class="bt-saldo num" style="font-weight:600">${fmt(totalR)}</div>
-          <div class="bt-saldo num" style="color:var(--ink4);font-size:11px">suma</div>
-        </div>`;
-        g.cuentas.forEach(r=>{
-          tableRows+=`<div class="bt-sub-row">
-            <div></div>
-            <div style="font-size:10px;color:var(--ink4);padding-left:10px">↳ ${r.holdedName||r.sociedad}</div>
-            <div style="font-family:var(--font-mono);font-size:9.5px;color:var(--ink4)">${ibanShort(r.iban)}</div>
-            <div style="font-family:var(--font-num);font-size:12px;text-align:right;color:var(--ink3)">${fmt(r.saldo)}</div>
-            <div></div>
-          </div>`;
-        });
-      }
-    });
-    html+=`<div class="banco-section" style="animation-delay:${bi*0.04}s">
-      <div class="banco-header" onclick="toggleBanco('${banco.replace(/\W/g,'_')}')">
-        ${bankLogoHtml(banco,'lg')}
-        <div><div class="banco-name-main">${banco}</div><div style="font-size:10.5px;color:var(--ink4)">${bRows.length} cuentas · ${Object.keys(restMap).length} restaurantes</div></div>
-        <div class="banco-total-amt num">${fmt(total)}</div>
-        <div class="collapse-icon ${isOpen?'open':''} " id="bicon-${banco.replace(/\W/g,'_')}" style="color:var(--ink4);margin-left:10px">▼</div>
-      </div>
-      <div class="banco-table ${isOpen?'':'collapsed'}" id="table-${banco.replace(/\W/g,'_')}">
-        <div class="bt-head"><div>Sociedad</div><div>Restaurante</div><div>IBAN</div><div style="text-align:right">Saldo</div><div style="text-align:right">Detalle</div></div>
-        ${tableRows}
-      </div>
-    </div>`;
-  });
-  document.getElementById('grid-banco').innerHTML=html;
-  document.getElementById('meta-banco').textContent=`${[...new Set(rows.map(r=>r.banco))].length} bancos`;
-}
-
-// ── RESTAURANTE (collapsible) ──
-function renderRestaurante(rows){
-  const rests=[...new Set(DATA.map(d=>d.restaurante))].sort();let html='',count=0;
-  rests.forEach(rest=>{
-    const rRows=rows.filter(r=>r.restaurante===rest);if(!rRows.length)return;count++;
-    const id='rest-'+rest.replace(/\W/g,'_');const isOpen=collapseState[id]===undefined?true:!collapseState[id];
-    const total=rRows.reduce((s,r)=>s+(r.saldo||0),0);const col=rRows[0].color||'#888';
-    let rowsHtml='';
-    rRows.forEach((r,i)=>{
-      if(i>0)rowsHtml+=`<div class="bank-row-divider"></div>`;
-      rowsHtml+=`<div class="bank-row">${bankLogoHtml(r.banco)}<div class="bank-info"><div class="bank-name">${r.banco} <span style="color:var(--ink4);font-weight:400">· ${r.sociedad}</span></div><div class="bank-iban">${ibanShort(r.iban)}</div></div><div class="bank-amount ${(r.saldo||0)===0?'zero':''} num">${r.saldo===null?'—':fmt(r.saldo)}</div></div>`;
-    });
-    const maxH=rRows.length*56+20;
-    html+=`<div class="entity-card" style="animation-delay:${count*0.035}s">
-      <div class="entity-header" onclick="toggleCard('${id}')">
-        <div class="entity-accent-bar" style="background:${col}"></div>
-        <div class="entity-name-wrap"><div class="entity-name" style="font-size:18px">${rest}</div><div style="font-size:10.5px;color:var(--ink4);margin-top:3px">${[...new Set(rRows.map(r=>r.sociedad))].join(', ')}</div></div>
-        <div style="text-align:right;margin-right:6px"><div class="entity-total-amount num">${fmt(total)}</div><div class="entity-total-label">${rRows.length} cuenta${rRows.length>1?'s':''}</div></div>
-        <div class="collapse-icon ${isOpen?'open':''}" id="icon-${id}">▼</div>
-      </div>
-      <div class="bank-rows ${isOpen?'':'collapsed'}" id="rows-${id}" style="max-height:${maxH}px">${rowsHtml}</div>
-    </div>`;
-  });
-  document.getElementById('grid-restaurante').innerHTML=html;
-  document.getElementById('meta-rest').textContent=`${count} restaurantes`;
-}
-
-// ── GRÁFICOS (pie charts) ──
-function renderGraficos(rows){
-  // Bar charts
-  const socMap={},bancMap={},restMap={};
-  rows.forEach(r=>{socMap[r.sociedad]=(socMap[r.sociedad]||0)+(r.saldo||0);bancMap[r.banco]=(bancMap[r.banco]||0)+(r.saldo||0);restMap[r.restaurante]=(restMap[r.restaurante]||0)+(r.saldo||0);});
-  function makeBar(map,colorFn){const sorted=Object.entries(map).sort((a,b)=>b[1]-a[1]);const max=sorted[0]?.[1]||1;return sorted.map(([name,val])=>{const pct=Math.round((val/max)*100);const short=name.length>16?name.substring(0,15)+'…':name;return`<div class="bar-row"><div class="bar-label" title="${name}">${short}</div><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${colorFn(name)}"></div></div><div class="bar-val num">${fmt(val)}</div></div>`}).join('')}
-  document.getElementById('bar-grid').innerHTML=`
-    <div class="analysis-card"><div class="analysis-title">Por Sociedad</div>${makeBar(socMap,n=>SOC_COLORS[n]||'#888')}</div>
-    <div class="analysis-card"><div class="analysis-title">Por Banco</div>${makeBar(bancMap,n=>BANK_COLORS[n]||'#888')}</div>
-    <div class="analysis-card"><div class="analysis-title">Por Restaurante</div>${makeBar(restMap,n=>rows.find(r=>r.restaurante===n)?.color||'#888')}</div>
-    <div class="analysis-card"><div class="analysis-title">Concentración bancaria (%)</div>${(()=>{const total=Object.values(bancMap).reduce((s,v)=>s+v,0)||1;return Object.entries(bancMap).sort((a,b)=>b[1]-a[1]).map(([name,val])=>{const pct=((val/total)*100).toFixed(1);return`<div class="bar-row"><div class="bar-label">${name}</div><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${BANK_COLORS[name]||'#888'}"></div></div><div class="bar-val num">${pct}%</div></div>`}).join('')})()}</div>`;
-
-  // Pie charts (Canvas)
-  const pieConfigs=[
-    {title:'Distribución por Banco',map:bancMap,colorFn:n=>BANK_COLORS[n]||'#888'},
-    {title:'Distribución por Sociedad',map:socMap,colorFn:n=>SOC_COLORS[n]||'#888'},
-    {title:'Distribución por Restaurante',map:restMap,colorFn:n=>rows.find(r=>r.restaurante===n)?.color||'#888'},
-  ];
-  let pieHtml='';
-  pieConfigs.forEach((cfg,ci)=>{
-    const total=Object.values(cfg.map).reduce((s,v)=>s+v,0)||1;
-    const entries=Object.entries(cfg.map).sort((a,b)=>b[1]-a[1]);
-    let legendHtml=entries.map(([name,val])=>{const pct=((val/total)*100).toFixed(1);const short=name.length>18?name.substring(0,17)+'…':name;return`<div class="pie-legend-item"><div class="pie-legend-dot" style="background:${cfg.colorFn(name)}"></div><span>${short}</span><span class="pie-legend-val num">${fmtK(val)}</span><span class="pie-legend-pct">${pct}%</span></div>`}).join('');
-    pieHtml+=`<div class="pie-card"><div class="pie-title">${cfg.title}</div><div class="pie-canvas-wrap"><canvas class="pie-canvas" id="pie-${ci}" width="180" height="180"></canvas></div><div class="pie-legend">${legendHtml}</div></div>`;
-  });
-  document.getElementById('pie-grid').innerHTML=pieHtml;
-
-  // Draw pies after DOM
-  requestAnimationFrame(()=>{
-    pieConfigs.forEach((cfg,ci)=>{
-      const canvas=document.getElementById('pie-'+ci);if(!canvas)return;
-      const ctx=canvas.getContext('2d');
-      const total=Object.values(cfg.map).reduce((s,v)=>s+v,0)||1;
-      const entries=Object.entries(cfg.map).sort((a,b)=>b[1]-a[1]);
-      let startAngle=-Math.PI/2;const cx=90,cy=90,r=75;
-      ctx.clearRect(0,0,180,180);
-      entries.forEach(([name,val])=>{
-        const sliceAngle=(val/total)*(2*Math.PI);
-        ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,startAngle,startAngle+sliceAngle);ctx.closePath();
-        ctx.fillStyle=cfg.colorFn(name);ctx.fill();
-        ctx.strokeStyle='#F5F0E8';ctx.lineWidth=2;ctx.stroke();
-        startAngle+=sliceAngle;
+    // Populate CF13 select
+    const cfSel = document.getElementById('cf-sociedad-select');
+    if (cfSel) {
+      const socs = [...new Set(FACTURAS_ALL.map(f => f.sociedad).filter(Boolean))].sort();
+      socs.forEach(s => {
+        if (!cfSel.querySelector(`option[value="${s}"]`)) {
+          const o = document.createElement('option'); o.value = s; o.textContent = s; cfSel.appendChild(o);
+        }
       });
-      // Center hole (donut)
-      ctx.beginPath();ctx.arc(cx,cy,38,'0',Math.PI*2);ctx.fillStyle='white';ctx.fill();
-      ctx.fillStyle='#1A1814';ctx.font='bold 13px Georgia';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(fmtK(total),cx,cy);
-    });
-  });
-
-  // Suggestions
-  const topBanc=Object.entries(bancMap).sort((a,b)=>b[1]-a[1])[0];
-  const total=Object.values(bancMap).reduce((s,v)=>s+v,0)||1;
-  const topPct=((topBanc[1]/total)*100).toFixed(0);
-  const zeros=rows.filter(r=>(r.saldo||0)===0).length;
-  document.getElementById('suggestions-block').innerHTML=`<div class="sug-title">💡 Recomendaciones</div>
-    <div class="sug-item"><div style="font-size:16px">⚠️</div><div class="sug-text"><strong>Concentración:</strong> ${topBanc[0]} concentra el ${topPct}% del saldo. Considera diversificar.</div></div>
-    <div class="sug-item"><div style="font-size:16px">📊</div><div class="sug-text"><strong>Cuentas en cero:</strong> ${zeros} cuenta${zeros>1?'s':''} con saldo 0 €. Evalúa si se pueden cerrar.</div></div>`;
-}
-
-// ── TRASPASOS ──
-function renderTraspasos(){
-  // Detect internal transfers from all remesas
-  const internals=[];
-  REMESAS_DATA.forEach(rem=>{
-    (rem.transactions||[]).forEach(tx=>{
-      if(isInternal(tx.creditorIBAN)){internals.push({...tx,remesaId:rem.id,remesaDate:rem.date,remesaStatus:rem.status,sociedad:rem.sociedad});}
-    });
-  });
-
-  const totalInternos=internals.reduce((s,t)=>s+(t.amount||0),0);
-  const pendientes=internals.filter(t=>t.remesaStatus!=='completed').length;
-  document.getElementById('meta-traspasos').textContent=`${internals.length} traspasos detectados`;
-  document.getElementById('traspasos-kpis').innerHTML=`
-    <div class="kpi"><div class="kpi-label">Total traspasos</div><div class="kpi-value num" style="color:var(--purple)">${fmt(totalInternos)}</div><div class="kpi-sub">${internals.length} movimientos</div></div>
-    <div class="kpi"><div class="kpi-label">Pendientes</div><div class="kpi-value num">${pendientes}</div><div class="kpi-sub">Sin completar</div></div>
-    <div class="kpi"><div class="kpi-label">Completados</div><div class="kpi-value num" style="color:var(--green)">${internals.length-pendientes}</div><div class="kpi-sub">Realizados</div></div>`;
-
-  if(internals.length===0){
-    document.getElementById('traspasos-content').innerHTML=`<div style="text-align:center;padding:60px;color:var(--ink4)"><div style="font-size:40px;margin-bottom:12px">🔄</div><div style="font-family:var(--font-display);font-size:20px">Sin traspasos detectados</div><div style="font-size:13px;margin-top:6px">Los traspasos aparecen cuando el IBAN destinatario es una de tus propias cuentas</div></div>`;
-    return;
+    }
+    populateFacturaFilters();
+    populateSEPASelects();
+    applyFacturaFilters();
+    if (currentTab === 'cf13') renderCF13();
+    if (json.errors && json.errors.length > 0) {
+      console.warn('Facturas errors:', json.errors);
+    }
+  } catch(err) {
+    if (!silent) {
+      const el = document.getElementById('facturas-content');
+      if (el) el.innerHTML = `<div style="padding:20px;color:var(--red);font-size:13px">❌ Error al cargar facturas: ${err.message}</div>`;
+    }
+    console.error('loadFacturas:', err);
   }
-
-  // Group by sociedad
-  const byDate={};
-  internals.forEach(t=>{const d=t.remesaDate?.substring(0,10)||'Sin fecha';if(!byDate[d])byDate[d]=[];byDate[d].push(t);});
-
-  let html=`<div style="background:white;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)">`;
-  Object.entries(byDate).sort(([a],[b])=>b.localeCompare(a)).forEach(([date,txs])=>{
-    html+=`<div style="padding:10px 18px;background:var(--cream2);border-bottom:1px solid var(--border);font-size:11px;color:var(--ink4);letter-spacing:.8px;text-transform:uppercase">${date} · ${txs.length} traspaso${txs.length>1?'s':''}</div>`;
-    txs.forEach(tx=>{
-      const destName=findAccountName(tx.creditorIBAN);
-      const srcName=DATA.find(d=>d.iban?.replace(/\s/g,'')===tx.debtorIBAN?.replace(/\s/g,''))?.holdedName||tx.sociedad||'—';
-      html+=`<div class="traspaso-flow">
-        <div class="flow-account">
-          <div class="flow-account-name">${srcName}</div>
-          <div class="flow-account-bank">${tx.debtorIBAN?ibanShort(tx.debtorIBAN):''}</div>
-        </div>
-        <div class="flow-arrow">→</div>
-        <div class="flow-account" style="border-color:rgba(107,63,160,0.3)">
-          <div class="flow-account-name">${destName}</div>
-          <div class="flow-account-bank">${ibanShort(tx.creditorIBAN)}</div>
-        </div>
-        <div>
-          <div class="flow-amount num">+${fmt(tx.amount)}</div>
-          <div class="flow-concept">${tx.concept||tx.creditorName||''}</div>
-        </div>
-        <div style="margin-left:10px">
-          <span class="remesa-status ${tx.remesaStatus==='completed'?'completed':tx.remesaStatus==='sent'?'sent':'pending'}">${tx.remesaStatus==='completed'?'✓ Completado':tx.remesaStatus==='sent'?'📤 Enviado':'⏳ Pendiente'}</span>
-        </div>
-      </div>`;
-    });
-  });
-  html+=`</div>`;
-  document.getElementById('traspasos-content').innerHTML=html;
 }
-
-function findAccountName(iban){
-  const clean=(iban||'').replace(/\s/g,'');
-  const acc=DATA.find(d=>(d.iban||'').replace(/\s/g,'')===clean);
-  return acc?acc.holdedName||acc.restaurante:'Cuenta interna';
-}
-
-// ── CF 13 SEMANAS ──
 
 function populateFacturaFilters() {
   const socSel  = document.getElementById('f-sociedad');
@@ -1786,7 +1430,7 @@ function openBuildSEPA() {
     <button class="btn btn-rust" id="btn-exec-sepa">⚡ Crear XML y registrar en Holded</button>`;
   window._sepaParams = {soc, cuenta, concep, fecha};
   document.getElementById('btn-exec-sepa').onclick = () => executeCreateSEPA();
-  var ov=document.getElementById('modal-overlay'); ov.style.display='flex';
+  document.getElementById('modal-overlay').classList.remove('hidden');
 }
 
 async function executeCreateSEPA() {
