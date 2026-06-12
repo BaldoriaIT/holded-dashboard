@@ -268,14 +268,20 @@ app.get('/api/debug/balances',async(req,res)=>{
 app.get('/api/balances',async(req,res)=>{
   try{
     const envs=[...new Set(ACCOUNTS_MAP.map(a=>a.apiKeyEnv))];
-    const results=await Promise.allSettled(envs.map(async envName=>{
+    // Sequential calls with delay to avoid 429 rate limit
+    const results=[];
+    for(const envName of envs){
       const k=apiKeyV1(envName);
-      if(!k) return {envName,accounts:[]};
+      if(!k){results.push({status:'fulfilled',value:{envName,accounts:[]}});continue;}
       try{
         const data=await v1Get('/invoicing/v1/treasury',k);
-        return {envName,accounts:Array.isArray(data)?data:[]};
-      }catch(e){console.error('balances',envName,e.message);return{envName,accounts:[],error:e.message};}
-    }));
+        results.push({status:'fulfilled',value:{envName,accounts:Array.isArray(data)?data:[]}});
+      }catch(e){
+        console.error('balances',envName,e.message);
+        results.push({status:'fulfilled',value:{envName,accounts:[],error:e.message}});
+      }
+      await new Promise(r=>setTimeout(r,200)); // 200ms between calls
+    }
 
     const byName={},byIban={},allAccounts=[];
     results.forEach(r=>{
@@ -308,9 +314,10 @@ app.get('/api/facturas',async(req,res)=>{
     const envs=[...new Set(ACCOUNTS_MAP.map(a=>a.apiKeyEnv))];
     const allFacturas=[],errors=[];
 
-    await Promise.allSettled(envs.map(async envName=>{
+    // Sequential with delay to avoid 429
+    for(const envName of envs){
       const k=apiKey(envName);
-      if(!k) return;
+      if(!k) continue;
       const soc=ACCOUNTS_MAP.find(a=>a.apiKeyEnv===envName)?.sociedad||envName;
       try{
         // Fetch purchases (v2) + lookup tables (v1 — v2 endpoints return 403/404)
@@ -341,6 +348,16 @@ app.get('/api/facturas',async(req,res)=>{
           catch(e){errors.push({env:envName,soc,error:'fallback: '+e.message});}
         }
 
+        // Fetch cobros (sales invoices) for CF13
+        let rawSales=[];
+        try{
+          const [saleP,saleO]=await Promise.allSettled([
+            v2GetAll('/invoices?status=pending',k),
+            v2GetAll('/invoices?status=overdue',k),
+          ]);
+          [saleP,saleO].forEach(r=>{if(r.status==='fulfilled'&&Array.isArray(r.value))rawSales=rawSales.concat(r.value);});
+        }catch(e){}
+
         // Build lookup maps: ID → name
         const acctMap={},pmMap={},projMap={};
         // acctRes is empty (no working endpoint) — resolve per-ID via v2 below
@@ -349,19 +366,7 @@ app.get('/api/facturas',async(req,res)=>{
         if(projRes.status==='fulfilled'&&Array.isArray(projRes.value))
           projRes.value.forEach(p=>{if(p.id) projMap[p.id]=p.name||p.title||'';});
 
-        // Resolve expense account names: collect unique IDs from all invoices, fetch v2 one-by-one
-        const rawAll = [];
-        [pendRes,ovrRes,parRes].forEach(r=>{if(r.status==='fulfilled'&&Array.isArray(r.value))rawAll.push(...r.value);});
-        const uniqueAcctIds=[...new Set(rawAll.map(inv=>inv.lines?.[0]?.account).filter(Boolean))];
-        await Promise.allSettled(uniqueAcctIds.map(async acctId=>{
-          if(acctMap[acctId]) return; // already resolved
-          for(const ep of['/accounting/expense-accounts/'+acctId,'/accounting/accounts/'+acctId,'/expenses-accounts/'+acctId]){
-            try{
-              const data=await v2Get(ep,k);
-              if(data&&(data.name||data.account_name)){acctMap[acctId]=data.name||data.account_name;return;}
-            }catch(e){}
-          }
-        }));
+        // Note: expense account names not available via API — cuenta column shows — 
 
         const seen=new Set();
         for(const inv of rawInvoices){
@@ -412,10 +417,38 @@ app.get('/api/facturas',async(req,res)=>{
             currency:    inv.currency||'EUR',
             contactIBAN: inv.contact_iban||inv.iban||'',
             contactId:   inv.contact_id||inv.contactId||'',
+            type:        'expense',
+          });
+        }
+
+        // Push cobros (sales invoices) with type='income' for CF13
+        const seenSales=new Set();
+        for(const inv of rawSales){
+          const id=inv.id||inv._id;
+          if(!id||seenSales.has(id)) continue;
+          seenSales.add(id);
+          if(['paid','voided'].includes(inv.status)) continue;
+          const totalAmt2=ph(inv.total??inv.subtotal??inv.amount);
+          let pendingAmt2;
+          if(inv.payments_pending!==undefined&&inv.payments_pending!==null) pendingAmt2=ph(inv.payments_pending);
+          else { const paid2=ph(inv.paid??inv.paidAmount??0); pendingAmt2=Math.max(0,totalAmt2-paid2); }
+          if(pendingAmt2<=0) continue;
+          allFacturas.push({
+            id:'sale_'+id,holdedId:id,sociedad:soc,apiKeyEnv:envName,
+            fechaEmision:isoDate(parseDate(inv.date??inv.created)),
+            vencimiento: isoDate(parseDate(inv.due_date??inv.dueDate)),
+            num:         inv.document_number||inv.docNumber||inv.number||'',
+            proveedor:   inv.contact_name||inv.contactName||'',
+            proyecto:'',cuenta:'',formaPago:'',
+            pendiente:pendingAmt2,totalAmount:totalAmt2,paidAmount:totalAmt2-pendingAmt2,
+            estado:'Pendiente cobro',estadoCode:1,currency:inv.currency||'EUR',
+            contactIBAN:'',contactId:inv.contact_id||'',
+            type:'income',
           });
         }
       }catch(e){errors.push({env:envName,soc,error:e.message});}
-    }));
+      await new Promise(r=>setTimeout(r,300)); // 300ms between societies
+    }
 
     allFacturas.sort((a,b)=>(a.vencimiento||'').localeCompare(b.vencimiento||''));
     res.json({success:true,count:allFacturas.length,data:allFacturas,errors});
