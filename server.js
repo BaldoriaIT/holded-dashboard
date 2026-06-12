@@ -173,28 +173,32 @@ app.get('/api/health',(req,res)=>{
 app.get('/api/debug/lookups',async(req,res)=>{
   const envName=req.query.env||'API_BALDORIA';
   const kV1=apiKeyV1(envName);
+  const kV2=apiKey(envName);
   if(!kV1) return res.json({error:'No v1 key for: '+envName});
   const results={};
-  const toTest=[
+  // V1 endpoints (key: header)
+  const v1eps=[
+    '/invoicing/v1/treasury',
     '/invoicing/v1/expenseaccounts','/accounting/v1/expenseaccounts',
     '/invoicing/v1/accounts','/accounting/v1/accounts',
     '/invoicing/v1/paymentmethods','/invoicing/v1/payment-methods',
-    '/invoicing/v1/paymethods',
     '/projects/v1/projects','/invoicing/v1/projects',
   ];
-  for(const ep of toTest){
+  for(const ep of v1eps){
     try{
-      const r=await fetch('https://api.holded.com/api'+ep+'?limit=3',{
+      const r=await fetch('https://api.holded.com/api'+ep+'?limit=5',{
         headers:{key:kV1,'Accept':'application/json'},signal:AbortSignal.timeout(6000)
       });
       const text=await r.text();
       const isHtml=text.trim().startsWith('<');
       let parsed=null;try{parsed=JSON.parse(text);}catch(e){}
       const items=Array.isArray(parsed)?parsed:(parsed&&(parsed.items||parsed.data)||[]);
-      results[ep]={status:r.status,isJson:!isHtml&&!!parsed,itemCount:Array.isArray(items)?items.length:0,
-        firstItem:Array.isArray(items)&&items[0]?{id:items[0].id,name:items[0].name}:null};
-    }catch(e){results[ep]={error:e.message};}
+      results['V1:'+ep]={status:r.status,isJson:!isHtml&&!!parsed,
+        itemCount:Array.isArray(items)?items.length:0,
+        items:Array.isArray(items)?items.slice(0,3).map(x=>({id:x.id,name:x.name,iban:x.iban})):null};
+    }catch(e){results['V1:'+ep]={error:e.message};}
   }
+  // V2 endpoint for purchases payment - show what fields it returns on OPTIONS
   res.json({envName,timestamp:new Date().toISOString(),results});
 });
 
@@ -377,7 +381,7 @@ app.get('/api/facturas',async(req,res)=>{
           // Resolve field values
           const lineAccountId=(inv.lines&&inv.lines[0])?inv.lines[0].account||'':'';
           const lineProjectId=(inv.lines&&inv.lines[0])?inv.lines[0].project_id||'':'';
-          const cuentaName=acctMap[lineAccountId]||(lineAccountId?'['+lineAccountId.substring(0,8)+'…]':'');
+          const cuentaName=acctMap[lineAccountId]||'';
           const pmName=pmMap[inv.payment_method_id]||'';
           const projName=projMap[lineProjectId]||'';
 
@@ -589,8 +593,26 @@ app.post('/api/mark-paid',async(req,res)=>{
           paymentBody.bank_account_id=bankingAccountId;
           paymentBody.treasury_account_id=bankingAccountId;
         }
-        await v2Post('/purchases/'+tx.invoiceId+'/payments',k,paymentBody);
-        results.push({invoiceId:tx.invoiceId,ok:true});
+        let payOk=false;
+        // Try v2 first
+        try {
+          await v2Post('/purchases/'+tx.invoiceId+'/payments',k,paymentBody);
+          payOk=true;
+        } catch(e2) {
+          console.warn('v2 payment failed:',e2.message,', trying v1...');
+        }
+        // Try v1 as fallback (v1 uses key: header, accountId field)
+        if(!payOk && kV1) {
+          await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
+            date: Math.floor(execDateObj.getTime()/1000),
+            amount: tx.amount,
+            accountId: bankingAccountId,
+            concept: concepto||'Pago remesa SEPA',
+            notes: 'Cuenta: '+accountName+' | IBAN: '+debtorIBAN,
+          });
+          payOk=true;
+        }
+        results.push({invoiceId:tx.invoiceId,ok:payOk,bankingAccountId,accountName});
       }catch(e){
         console.error('mark-paid',tx.invoiceId,e.message);
         results.push({invoiceId:tx.invoiceId,ok:false,error:e.message});
