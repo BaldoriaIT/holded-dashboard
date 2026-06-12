@@ -711,10 +711,13 @@ function setFilter(f){
   currentFilter=f;
   buildSidebarFilters();
   render();
-  // Sync CF13 select dropdown
+  // Sync CF13 select
   const cfSel=document.getElementById('cf-sociedad-select');
   if(cfSel) cfSel.value = f==='all'?'all':f;
   if(currentTab==='cf13') renderCF13();
+  // Sync Facturas f-sociedad dropdown
+  const fSocSel=document.getElementById('f-sociedad');
+  if(fSocSel){ fSocSel.value = f==='all'?'':f; applyFacturaFilters(); }
 }
 function getFiltered(){return currentFilter==='all'?DATA:DATA.filter(d=>d.sociedad===currentFilter)}
 
@@ -1286,6 +1289,9 @@ function applyFacturaFilters() {
   else if (estadoFilter === '30d') f = f.filter(x => { const d=daysDiff(x.vencimiento); return d>=0&&d<=30; });
   FACTURAS_FILTERED = f;
   renderFacturasTable();
+  // Sync sidebar highlight with f-sociedad value
+  if(socF && currentFilter !== socF){ currentFilter=socF; buildSidebarFilters(); }
+  else if(!socF && currentFilter !== 'all'){ currentFilter='all'; buildSidebarFilters(); }
 }
 
 function setEstadoFilter(f, btn) {
@@ -1611,7 +1617,7 @@ async function markPaid(transactions, debtorIBAN, fechaRemesa, concepto, debtorA
   if(!confirm('¿Marcar '+transactions.length+' factura(s) como PAGADAS en Holded?\n\nCuenta: '+ibanShort(debtorIBAN)+'\nFecha: '+fechaRemesa)) return;
   document.getElementById('modal-footer').innerHTML='<div style="color:var(--ink4);font-size:13px">⏳ Marcando facturas como pagadas en Holded...</div>';
   try {
-    const enriched=transactions.map(tx=>{const f=FACTURAS_ALL.find(x=>x.id===tx.invoiceId);return{...tx,sociedad:f?.sociedad||''};});
+    const enriched=transactions.map(tx=>{const f=FACTURAS_ALL.find(x=>x.holdedId===tx.invoiceId||x.id===tx.invoiceId);return{...tx,sociedad:f?.sociedad||tx.sociedad||''};});
     const res=await fetch(API_BASE+'/api/mark-paid',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({transactions:enriched,debtorIBAN,debtorAccountName:debtorAccountName||'',fechaRemesa,concepto})
