@@ -332,24 +332,24 @@ app.get('/api/facturas',async(req,res)=>{
       try{
         // Fetch purchases (v2) + lookup tables (v1 — v2 endpoints return 403/404)
         const kV1lookup = apiKeyV1(envName);
-        const [pendRes,ovrRes,parRes,acctRes,pmRes,projRes]=await Promise.allSettled([
+        const [pendRes,ovrRes,parRes,pmRes,projRes,v1PurchRes]=await Promise.allSettled([
           v2GetAll('/purchases?status=pending',k),
           v2GetAll('/purchases?status=overdue',k),
           v2GetAll('/purchases?status=partial',k),
-          // Expense accounts — v1 works, v2 returns 404
-          // Expense accounts: all known endpoints return HTML — skip for now
-          // cuenta names will be resolved per-invoice via v2 after fetch
-          Promise.resolve([]),
           // Payment methods: confirmed at /invoicing/v1/paymentmethods
           kV1lookup ? v1GetAll('/invoicing/v1/paymentmethods',kV1lookup).catch(()=>[]) : Promise.resolve([]),
-          // Projects: try multiple v1 paths
+          // Projects
           kV1lookup ? (async()=>{
-            for(const ep of['/projects/v1/projects','/invoicing/v1/projects','/projects/v1/list']){
+            for(const ep of['/projects/v1/projects','/invoicing/v1/projects']){
               try{const r=await v1GetAll(ep,kV1lookup);if(r&&r.length>0)return r;}catch(e){}
             }
             return [];
           })() : Promise.resolve([]),
+          // V1 purchases — returns account NAMES (not IDs like v2)
+          kV1lookup ? v1GetAll('/invoicing/v1/documents?docType=purchase',kV1lookup).catch(()=>[]) : Promise.resolve([]),
         ]);
+        // acctRes placeholder (unused, kept for variable count)
+        const acctRes={status:'fulfilled',value:[]};
 
         let rawInvoices=[];
         [pendRes,ovrRes,parRes].forEach(r=>{if(r.status==='fulfilled'&&Array.isArray(r.value))rawInvoices=rawInvoices.concat(r.value);});
@@ -368,9 +368,20 @@ app.get('/api/facturas',async(req,res)=>{
           [saleP,saleO].forEach(r=>{if(r.status==='fulfilled'&&Array.isArray(r.value))rawSales=rawSales.concat(r.value);});
         }catch(e){}
 
-        // Build lookup maps: ID → name
+        // Build lookup maps
         const acctMap={},pmMap={},projMap={};
-        // acctRes is empty (no working endpoint) — resolve per-ID via v2 below
+        // docNumCuentaMap: document_number → account name (from v1 purchases)
+        const docNumCuentaMap={};
+        if(v1PurchRes.status==='fulfilled'&&Array.isArray(v1PurchRes.value)){
+          v1PurchRes.value.forEach(doc=>{
+            // v1 document has: docNumber + account (account NAME in v1, not ID)
+            const docNum=doc.docNumber||doc.num||doc.ref||'';
+            const cuentaV1=doc.accountName||doc.account||
+              (doc.items&&doc.items[0]&&(doc.items[0].accountName||doc.items[0].account))||
+              (doc.lines&&doc.lines[0]&&(doc.lines[0].accountName||doc.lines[0].account))||'';
+            if(docNum&&cuentaV1) docNumCuentaMap[docNum]=cuentaV1;
+          });
+        }
         if(pmRes.status==='fulfilled'&&Array.isArray(pmRes.value))
           pmRes.value.forEach(p=>{if(p.id) pmMap[p.id]=p.name||p.payment_method||'';});
         if(projRes.status==='fulfilled'&&Array.isArray(projRes.value))
@@ -426,7 +437,12 @@ app.get('/api/facturas',async(req,res)=>{
           // acctMap populated from v1 /invoicing/v1/expenseaccounts (when available)
           // Fallback: use line name as cuenta description
           const lineItemName=(inv.lines&&inv.lines[0])?inv.lines[0].name||'':'';
-          const cuentaName=ACCOUNT_NAMES_MAP[lineAccountId]||acctMap[lineAccountId]||(lineAccountId?lineItemNameClean(lineItemName):'');
+          // Cuenta: v1 purchase has account name by document number
+          const invDocNum=inv.document_number||inv.docNumber||inv.number||'';
+          const cuentaName=ACCOUNT_NAMES_MAP[lineAccountId]
+            ||docNumCuentaMap[invDocNum]
+            ||acctMap[lineAccountId]
+            ||'';
           const pmName=pmMap[inv.payment_method_id]||'';
           const projName=projMap[lineProjectId]||'';
 
@@ -679,10 +695,14 @@ app.post('/api/mark-paid',async(req,res)=>{
           date:    isoDate(execDateObj),
           amount:  tx.amount,
           concept: concepto||'Pago remesa SEPA',
-          notes:   accountName ? 'Cuenta: '+accountName : undefined,
+          notes:   accountName ? 'Cuenta: '+accountName+' ('+debtorIBAN+')' : ('IBAN: '+debtorIBAN),
         };
         if (bankingAccountId) {
-          v2PayBody.banking_account_id = bankingAccountId;
+          // Try all known field names — Holded v2 docs are inconsistent
+          v2PayBody.banking_account_id  = bankingAccountId;
+          v2PayBody.treasury_account_id = bankingAccountId;
+          v2PayBody.account_id          = bankingAccountId;
+          v2PayBody.bankAccountId       = bankingAccountId;
         }
 
         let payOk = false;
