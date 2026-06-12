@@ -770,7 +770,7 @@ function renderKPIs(rows){
   const socs=[...new Set(rows.map(r=>r.sociedad))];const banks=[...new Set(rows.map(r=>r.banco))];
   const maxV=Math.max(...rows.map(r=>r.saldo||0));const topRow=rows.find(r=>r.saldo===maxV);
   // Filter facturas by current sociedad filter (same as balance rows)
-  const _facSoc = currentFilter==='all' ? FACTURAS_ALL : FACTURAS_ALL.filter(f=>f.sociedad===currentFilter);
+  const _facSoc = (currentFilter==='all' ? FACTURAS_ALL : FACTURAS_ALL.filter(f=>f.sociedad===currentFilter)).filter(f=>f.type!=='income');
   const vencidas=_facSoc.filter(f=>daysDiff(f.vencimiento)<0).reduce((s,f)=>s+(f.pendiente||0),0);
   const proximas=_facSoc.filter(f=>daysDiff(f.vencimiento)>=0&&daysDiff(f.vencimiento)<=7).reduce((s,f)=>s+(f.pendiente||0),0);
   document.getElementById('kpi-grid').innerHTML=`
@@ -1060,11 +1060,20 @@ function renderCF13(){
     weeks.push({start:wStart,end:wEnd,ingresos:[],gastos:[]});
   }
   // Add past (vencidas) to week 0
-  facts.forEach(f=>{
-    const d=new Date(f.vencimiento);const amt=f.pendiente||0;
+  // Separate cobros (income) from pagos (expenses)
+  const expFacts = facts.filter(f=>f.type!=='income');
+  const incFacts = facts.filter(f=>f.type==='income');
+  expFacts.forEach(f=>{
+    const d=new Date(f.vencimiento);const amt=f.pendiente||0;if(!amt)return;
     let placed=false;
     weeks.forEach(w=>{if(d>=w.start&&d<=w.end){w.gastos.push(amt);placed=true;}});
-    if(!placed&&d<weeks[0].start){if(f.type==='income')weeks[0].ingresos.push(amt);else weeks[0].gastos.push(amt);}
+    if(!placed&&d<weeks[0].start) weeks[0].gastos.push(amt);
+  });
+  incFacts.forEach(f=>{
+    const d=new Date(f.vencimiento);const amt=f.pendiente||0;if(!amt)return;
+    let placed=false;
+    weeks.forEach(w=>{if(d>=w.start&&d<=w.end){w.ingresos.push(amt);placed=true;}});
+    if(!placed) weeks[0].ingresos.push(amt);
   });
 
   // Build saldo acumulado
@@ -1085,8 +1094,8 @@ function renderCF13(){
     </div>`;
   });
 
-  const totalIngr=0;
-  const totalGast=facts.reduce((s,f)=>s+(f.pendiente||0),0);
+  const totalIngr=weeks.reduce((s,w)=>s+w.ingresos.reduce((a,v)=>a+v,0),0);
+  const totalGast=weeks.reduce((s,w)=>s+w.gastos.reduce((a,v)=>a+v,0),0);
   const vencidas  = facts.filter(f=>daysDiff(f.vencimiento)<0).reduce((s,f)=>s+(f.pendiente||0),0);
   const proximas7 = facts.filter(f=>{const d=daysDiff(f.vencimiento);return d>=0&&d<=7;}).reduce((s,f)=>s+(f.pendiente||0),0);
   const nVenc     = facts.filter(f=>daysDiff(f.vencimiento)<0).length;
@@ -1269,7 +1278,7 @@ function populateFacturaFilters() {
 function applyFacturaFilters() {
   const socF  = document.getElementById('f-sociedad')?.value  || '';
   const projF = document.getElementById('f-proyecto')?.value || '';
-  let f = FACTURAS_ALL.slice();
+  let f = FACTURAS_ALL.filter(x=>x.type!=='income');
   if (socF)  f = f.filter(x => x.sociedad === socF);
   if (projF) f = f.filter(x => x.proyecto === projF);
   if (estadoFilter === 'vencidas') f = f.filter(x => daysDiff(x.vencimiento) < 0);
