@@ -320,20 +320,11 @@ app.get('/api/facturas',async(req,res)=>{
           v2GetAll('/purchases?status=overdue',k),
           v2GetAll('/purchases?status=partial',k),
           // Expense accounts — v1 works, v2 returns 404
-          // Expense accounts: try multiple v1 paths
-          kV1lookup ? (async()=>{
-            for(const ep of['/invoicing/v1/expenseaccounts','/accounting/v1/expenseaccounts','/invoicing/v1/accounts','/accounting/v1/accounts']){
-              try{const r=await v1GetAll(ep,kV1lookup);if(r&&r.length>0)return r;}catch(e){}
-            }
-            return [];
-          })() : Promise.resolve([]),
-          // Payment methods: try multiple v1 paths
-          kV1lookup ? (async()=>{
-            for(const ep of['/invoicing/v1/paymentmethods','/invoicing/v1/payment-methods','/invoicing/v1/paymethods']){
-              try{const r=await v1GetAll(ep,kV1lookup);if(r&&r.length>0)return r;}catch(e){}
-            }
-            return [];
-          })() : Promise.resolve([]),
+          // Expense accounts: all known endpoints return HTML — skip for now
+          // cuenta names will be resolved per-invoice via v2 after fetch
+          Promise.resolve([]),
+          // Payment methods: confirmed at /invoicing/v1/paymentmethods
+          kV1lookup ? v1GetAll('/invoicing/v1/paymentmethods',kV1lookup).catch(()=>[]) : Promise.resolve([]),
           // Projects: try multiple v1 paths
           kV1lookup ? (async()=>{
             for(const ep of['/projects/v1/projects','/invoicing/v1/projects','/projects/v1/list']){
@@ -352,12 +343,25 @@ app.get('/api/facturas',async(req,res)=>{
 
         // Build lookup maps: ID → name
         const acctMap={},pmMap={},projMap={};
-        if(acctRes.status==='fulfilled'&&Array.isArray(acctRes.value))
-          acctRes.value.forEach(a=>{if(a.id) acctMap[a.id]=a.name||a.account_name||'';});
+        // acctRes is empty (no working endpoint) — resolve per-ID via v2 below
         if(pmRes.status==='fulfilled'&&Array.isArray(pmRes.value))
           pmRes.value.forEach(p=>{if(p.id) pmMap[p.id]=p.name||p.payment_method||'';});
         if(projRes.status==='fulfilled'&&Array.isArray(projRes.value))
           projRes.value.forEach(p=>{if(p.id) projMap[p.id]=p.name||p.title||'';});
+
+        // Resolve expense account names: collect unique IDs from all invoices, fetch v2 one-by-one
+        const rawAll = [];
+        [pendRes,ovrRes,parRes].forEach(r=>{if(r.status==='fulfilled'&&Array.isArray(r.value))rawAll.push(...r.value);});
+        const uniqueAcctIds=[...new Set(rawAll.map(inv=>inv.lines?.[0]?.account).filter(Boolean))];
+        await Promise.allSettled(uniqueAcctIds.map(async acctId=>{
+          if(acctMap[acctId]) return; // already resolved
+          for(const ep of['/accounting/expense-accounts/'+acctId,'/accounting/accounts/'+acctId,'/expenses-accounts/'+acctId]){
+            try{
+              const data=await v2Get(ep,k);
+              if(data&&(data.name||data.account_name)){acctMap[acctId]=data.name||data.account_name;return;}
+            }catch(e){}
+          }
+        }));
 
         const seen=new Set();
         for(const inv of rawInvoices){
@@ -607,8 +611,8 @@ app.post('/api/mark-paid',async(req,res)=>{
             date: Math.floor(execDateObj.getTime()/1000),
             amount: tx.amount,
             accountId: bankingAccountId,
+            account: bankingAccountId,
             concept: concepto||'Pago remesa SEPA',
-            notes: 'Cuenta: '+accountName+' | IBAN: '+debtorIBAN,
           });
           payOk=true;
         }
