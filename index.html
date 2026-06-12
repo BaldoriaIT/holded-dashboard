@@ -1590,7 +1590,9 @@ async function executeCreateSEPA() {
     var txList = json.transactions || [];
     document.getElementById('modal-footer').innerHTML =
       '<button class="btn btn-outline" onclick="closeModal()">Cerrar sin marcar</button>' +
+      '<button class="btn btn-outline" id="btn-pdf-remesa" style="background:var(--ink);color:white">📄 PDF resumen</button>' +
       '<button class="btn btn-green" id="btn-mark-paid-final">✓ Marcar ' + txList.length + ' factura(s) como Pagado en Holded</button>';
+    document.getElementById('btn-pdf-remesa').onclick = function(){ generarPDFRemesa(txList, soc, cuenta, fecha, concep); };
     document.getElementById('btn-mark-paid-final').onclick = function(){
       // Find holdedName for the debtorIBAN account
       var debtorAcc = (DATA||[]).find(function(d){ return d.iban && d.iban.replace(/\s/g,'') === cuenta.replace(/\s/g,''); });
@@ -1653,6 +1655,78 @@ function closeModal() {
   if (overlay) { overlay.style.display = 'none'; }
   window._sepaParams = null;
 }
+// ─── PDF RESUMEN REMESA ───────────────────────────────────────────────
+function generarPDFRemesa(txList, sociedad, debtorIBAN, fecha, concepto) {
+  // Build enriched list with cuenta/proveedor from FACTURAS_ALL
+  var rows = txList.map(function(tx){
+    var f = FACTURAS_ALL.find(function(x){ return x.holdedId===tx.invoiceId||x.id===tx.invoiceId; });
+    return {
+      proveedor:  f ? (f.proveedor||'—') : (tx.creditorName||'—'),
+      cuenta:     f ? (f.cuenta||'—') : '—',
+      num:        f ? (f.num||'—') : '—',
+      vencimiento:f ? (f.vencimiento||'—') : '—',
+      iban:       tx.creditorIBAN||'',
+      amount:     tx.amount||0,
+    };
+  });
+
+  // Group by cuenta then proveedor
+  var byCuenta = {};
+  rows.forEach(function(r){
+    var c = r.cuenta||'Sin cuenta';
+    if(!byCuenta[c]) byCuenta[c]=[];
+    byCuenta[c].push(r);
+  });
+
+  // Build HTML for print
+  var totalAll = rows.reduce(function(s,r){return s+r.amount;},0);
+  var ibanShortStr = debtorIBAN ? debtorIBAN.replace(/(.{4})/g,'$1 ').trim() : '';
+
+  var html = '<html><head><meta charset="UTF-8"><title>Remesa SEPA — '+escapeHtml(sociedad)+'</title>' +
+    '<style>' +
+    'body{font-family:Georgia,serif;margin:0;padding:24px;color:#1A1814;font-size:12px}' +
+    'h1{font-family:Georgia,serif;font-size:22px;margin:0 0 4px}' +
+    '.meta{color:#6B6358;font-size:11px;margin-bottom:20px}' +
+    '.section-title{font-size:13px;font-weight:700;background:#f0ebe2;padding:6px 10px;border-left:4px solid #C4613A;margin:18px 0 6px}' +
+    'table{width:100%;border-collapse:collapse;margin-bottom:10px}' +
+    'th{text-align:left;font-size:10px;color:#9A9185;border-bottom:1px solid #ddd;padding:4px 6px}' +
+    'td{padding:5px 6px;border-bottom:1px solid #f0ede8;font-size:11px}' +
+    '.num{text-align:right;font-family:monospace}' +
+    '.subtotal{background:#f9f6f0;font-weight:600}' +
+    '.total-row{background:#C4613A;color:white;font-weight:700;font-size:13px}' +
+    '.total-row td{padding:8px 6px}' +
+    '@media print{body{padding:12px}}' +
+    '</style></head><body>';
+
+  html += '<h1>Remesa SEPA — '+escapeHtml(sociedad)+'</h1>';
+  html += '<div class="meta">Cuenta de cargo: '+ibanShortStr+' &nbsp;|&nbsp; Fecha: '+escapeHtml(fecha)+'&nbsp;|&nbsp; Concepto: '+escapeHtml(concepto)+'</div>';
+
+  Object.keys(byCuenta).sort().forEach(function(cuenta){
+    var cRows = byCuenta[cuenta];
+    var cTotal = cRows.reduce(function(s,r){return s+r.amount;},0);
+    // Sort by proveedor
+    cRows.sort(function(a,b){return a.proveedor.localeCompare(b.proveedor);});
+    html += '<div class="section-title">'+escapeHtml(cuenta)+' &nbsp;<span style="font-weight:400;font-size:11px;color:#6B6358">('+cRows.length+' factura'+(cRows.length>1?'s':'')+')</span></div>';
+    html += '<table><thead><tr><th>Proveedor</th><th>Nº Factura</th><th>Vencimiento</th><th>IBAN Acreedor</th><th class="num">Importe</th></tr></thead><tbody>';
+    cRows.forEach(function(r){
+      html += '<tr><td>'+escapeHtml(r.proveedor)+'</td><td style="font-family:monospace;font-size:10px">'+escapeHtml(r.num)+'</td><td>'+r.vencimiento+'</td><td style="font-family:monospace;font-size:9px">'+escapeHtml(r.iban)+'</td><td class="num">'+fmt(r.amount)+'</td></tr>';
+    });
+    html += '<tr class="subtotal"><td colspan="4" style="text-align:right">Subtotal '+escapeHtml(cuenta)+'</td><td class="num">'+fmt(cTotal)+'</td></tr>';
+    html += '</tbody></table>';
+  });
+
+  html += '<table><tbody><tr class="total-row"><td colspan="4" style="text-align:right">TOTAL REMESA — '+escapeHtml(sociedad)+'</td><td class="num">'+fmt(totalAll)+'</td></tr></tbody></table>';
+  html += '<div style="margin-top:24px;font-size:10px;color:#9A9185">Generado el '+(new Date().toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}))+'</div>';
+  html += '</body></html>';
+
+  // Open in new window and trigger print/save as PDF
+  var win = window.open('','_blank','width=900,height=700');
+  win.document.write(html);
+  win.document.close();
+  win.onload = function(){ win.print(); };
+}
+
+
 document.addEventListener('DOMContentLoaded', function() {
   initSEPADate();
   render();
