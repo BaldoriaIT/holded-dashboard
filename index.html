@@ -1593,7 +1593,10 @@ async function executeCreateSEPA() {
       '</div>';
     document.getElementById('modal-body').innerHTML += remesaInfo;
 
-    var txList = json.transactions || [];
+    var txList = (json.transactions || []).map(function(tx){
+      var f = FACTURAS_ALL.find(function(x){ return x.holdedId===tx.invoiceId||x.id===tx.invoiceId; });
+      return Object.assign({}, tx, { cuenta: f ? (f.cuenta||'') : '' });
+    });
     document.getElementById('modal-footer').innerHTML =
       '<button class="btn btn-outline" onclick="closeModal()">Cerrar sin marcar</button>' +
       '<button class="btn btn-outline" id="btn-pdf-remesa" style="background:var(--ink);color:white">📄 PDF resumen</button>' +
@@ -1668,7 +1671,7 @@ function generarPDFRemesa(txList, sociedad, debtorIBAN, fecha, concepto) {
     var f = FACTURAS_ALL.find(function(x){ return x.holdedId===tx.invoiceId||x.id===tx.invoiceId; });
     return {
       proveedor:  f ? (f.proveedor||'—') : (tx.creditorName||'—'),
-      cuenta:     f ? (f.cuenta||'—') : '—',
+      cuenta:     f ? (f.cuenta||tx.cuenta||'—') : (tx.cuenta||'—'),
       num:        f ? (f.num||'—') : '—',
       vencimiento:f ? (f.vencimiento||'—') : '—',
       iban:       tx.creditorIBAN||'',
@@ -1713,9 +1716,9 @@ function generarPDFRemesa(txList, sociedad, debtorIBAN, fecha, concepto) {
     // Sort by proveedor
     cRows.sort(function(a,b){return a.proveedor.localeCompare(b.proveedor);});
     html += '<div class="section-title">'+escapeHtml(cuenta)+' &nbsp;<span style="font-weight:400;font-size:11px;color:#6B6358">('+cRows.length+' factura'+(cRows.length>1?'s':'')+')</span></div>';
-    html += '<table><thead><tr><th>Proveedor</th><th>Nº Factura</th><th>Vencimiento</th><th>IBAN Acreedor</th><th class="num">Importe</th></tr></thead><tbody>';
+    html += '<table><thead><tr><th>Proveedor</th><th>Cuenta</th><th>Nº Factura</th><th>Vencimiento</th><th>IBAN Acreedor</th><th class="num">Importe</th></tr></thead><tbody>';
     cRows.forEach(function(r){
-      html += '<tr><td>'+escapeHtml(r.proveedor)+'</td><td style="font-family:monospace;font-size:10px">'+escapeHtml(r.num)+'</td><td>'+r.vencimiento+'</td><td style="font-family:monospace;font-size:9px">'+escapeHtml(r.iban)+'</td><td class="num">'+fmt(r.amount)+'</td></tr>';
+      html += '<tr><td>'+escapeHtml(r.proveedor)+'</td><td style="font-size:10px;color:#6B6358">'+escapeHtml(r.cuenta)+'</td><td style="font-family:monospace;font-size:10px">'+escapeHtml(r.num)+'</td><td>'+r.vencimiento+'</td><td style="font-family:monospace;font-size:9px">'+escapeHtml(r.iban)+'</td><td class="num">'+fmt(r.amount)+'</td></tr>';
     });
     html += '<tr class="subtotal"><td colspan="4" style="text-align:right">Subtotal '+escapeHtml(cuenta)+'</td><td class="num">'+fmt(cTotal)+'</td></tr>';
     html += '</tbody></table>';
