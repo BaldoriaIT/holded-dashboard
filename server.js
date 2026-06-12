@@ -630,26 +630,42 @@ app.post('/api/mark-paid',async(req,res)=>{
           paymentBody.bank_account_id=bankingAccountId;
           paymentBody.treasury_account_id=bankingAccountId;
         }
-        let payOk=false;
-        // Try v2 first
+        let payOk=false, paymentId=null;
+
+        // Strategy 1: v2 POST /purchases/{id}/payments
         try {
-          await v2Post('/purchases/'+tx.invoiceId+'/payments',k,paymentBody);
+          const payResp=await v2Post('/purchases/'+tx.invoiceId+'/payments',k,paymentBody);
           payOk=true;
+          // Try to get payment ID from response to patch it with banco account
+          paymentId=payResp?.id||payResp?.payment_id||payResp?.data?.id||null;
+          console.log('v2 payment ok, id=',paymentId,'bankingAccountId=',bankingAccountId);
+          // If payment was created but without banking_account_id, patch it
+          if(paymentId && bankingAccountId){
+            try{
+              await v2Fetch('PATCH','/purchases/'+tx.invoiceId+'/payments/'+paymentId,k,{banking_account_id:bankingAccountId});
+              console.log('v2 payment patched with bankingAccountId');
+            }catch(ep){console.warn('patch payment:',ep.message);}
+          }
         } catch(e2) {
           console.warn('v2 payment failed:',e2.message,', trying v1...');
         }
-        // Try v1 as fallback (v1 uses key: header, accountId field)
+
+        // Strategy 2: v1 fallback — directly uses accountId (confirmed field name in v1)
         if(!payOk && kV1) {
-          await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
-            date: Math.floor(execDateObj.getTime()/1000),
-            amount: tx.amount,
-            accountId: bankingAccountId,
-            account: bankingAccountId,
-            concept: concepto||'Pago remesa SEPA',
-          });
-          payOk=true;
+          try{
+            await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
+              date: Math.floor(execDateObj.getTime()/1000),
+              amount: tx.amount,
+              accountId: bankingAccountId,
+              account: bankingAccountId,
+              concept: concepto||'Pago remesa SEPA',
+            });
+            payOk=true;
+            console.log('v1 payment ok with accountId=',bankingAccountId);
+          }catch(e3){console.error('v1 payment failed:',e3.message);}
         }
-        results.push({invoiceId:tx.invoiceId,ok:payOk,bankingAccountId,accountName});
+
+        results.push({invoiceId:tx.invoiceId,ok:payOk,bankingAccountId,accountName,paymentId});
       }catch(e){
         console.error('mark-paid',tx.invoiceId,e.message);
         results.push({invoiceId:tx.invoiceId,ok:false,error:e.message});
