@@ -58,6 +58,14 @@ const ACCOUNTS_MAP = [
 ];
 
 const SOC_API = {};
+
+// ─── ACCOUNT NAMES MAP ────────────────────────────────────────────────
+// Maps Holded expense account IDs → human-readable names
+// Run /api/debug/accounts to get the IDs, then fill in the names
+// Example: '69a95cbe4cbc7a4e3d0424ad': 'Pequeño equipamiento terraza'
+const ACCOUNT_NAMES_MAP = {
+  // ADD ENTRIES HERE after running /api/debug/accounts?env=API_BALDORIA etc.
+};
 ACCOUNTS_MAP.forEach(a => { SOC_API[a.sociedad] = a.apiKeyEnv; });
 
 // ─── Key helpers ──────────────────────────────────────────────────────
@@ -179,6 +187,24 @@ app.get('/api/health',(req,res)=>{
 });
 
 // ─── GET /api/debug/facturas ──────────────────────────────────────────
+app.get('/api/debug/accounts',async(req,res)=>{
+  // Returns all unique expense account IDs found in recent purchases
+  // Use this to build the ACCOUNT_NAMES_MAP below
+  const envName=req.query.env||'API_BALDORIA';
+  const k=apiKey(envName);
+  if(!k) return res.json({error:'No v2 key'});
+  try{
+    const purchases=await v2GetAll('/purchases',k);
+    const acctIds={};
+    purchases.forEach(inv=>{
+      if(inv.lines) inv.lines.forEach(l=>{
+        if(l.account) acctIds[l.account]=(acctIds[l.account]||0)+1;
+      });
+    });
+    res.json({envName,uniqueAccountIds:Object.entries(acctIds).sort((a,b)=>b[1]-a[1]).map(([id,count])=>({id,count,currentName:ACCOUNT_NAMES_MAP[id]||''}))});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.get('/api/debug/lookups',async(req,res)=>{
   const envName=req.query.env||'API_BALDORIA';
   const kV1=apiKeyV1(envName);
@@ -371,30 +397,7 @@ app.get('/api/facturas',async(req,res)=>{
         if(projRes.status==='fulfilled'&&Array.isArray(projRes.value))
           projRes.value.forEach(p=>{if(p.id) projMap[p.id]=p.name||p.title||'';});
 
-        // Resolve cuenta names: try v1 GET /invoicing/v1/documents/{id} for each unique account ID
-        // This is the only known path that might return account names in Holded
-        if(kV1lookup){
-          const uniqueAcctIds=[...new Set(rawInvoices.map(inv=>inv.lines?.[0]?.account).filter(Boolean))];
-          // Fetch max 10 unique accounts to avoid rate limit
-          const toFetch=uniqueAcctIds.slice(0,10);
-          for(const acctId of toFetch){
-            if(acctMap[acctId]) continue;
-            // Try: GET first invoice that uses this account to extract account info from v1
-            const sampleInv=rawInvoices.find(inv=>inv.lines?.[0]?.account===acctId);
-            if(sampleInv){
-              try{
-                const v1inv=await v1Get('/invoicing/v1/documents/'+sampleInv.id,kV1lookup);
-                if(v1inv){
-                  // v1 might return accountName, account.name, or similar
-                  const aName=v1inv.accountName||v1inv.account?.name||v1inv.ledgerAccount||
-                    (v1inv.lines&&v1inv.lines[0]&&(v1inv.lines[0].accountName||v1inv.lines[0].account?.name))||'';
-                  if(aName) acctMap[acctId]=aName;
-                }
-              }catch(e){}
-            }
-            await new Promise(r=>setTimeout(r,150)); // avoid 429
-          }
-        }
+        // Account names resolved via ACCOUNT_NAMES_MAP (static) or acctMap (if endpoint found)
 
         const seen=new Set();
         for(const inv of rawInvoices){
@@ -421,7 +424,7 @@ app.get('/api/facturas',async(req,res)=>{
           // acctMap populated from v1 /invoicing/v1/expenseaccounts (when available)
           // Fallback: use line name as cuenta description
           const lineItemName=(inv.lines&&inv.lines[0])?inv.lines[0].name||'':'';
-          const cuentaName=acctMap[lineAccountId]||(lineAccountId?lineItemNameClean(lineItemName):'');
+          const cuentaName=ACCOUNT_NAMES_MAP[lineAccountId]||acctMap[lineAccountId]||(lineAccountId?lineItemNameClean(lineItemName):'');
           const pmName=pmMap[inv.payment_method_id]||'';
           const projName=projMap[lineProjectId]||'';
 
@@ -668,46 +671,47 @@ app.post('/api/mark-paid',async(req,res)=>{
           paymentBody.bank_account_id=bankingAccountId;
           paymentBody.treasury_account_id=bankingAccountId;
         }
-        // Use v1 exclusively — v2 /purchases/{id}/payments returns HTML (not in production)
-        // v1 /invoicing/v1/documents/{id}/pay accepts accountId = treasury account ID
+        // Mark purchase as paid via v2 POST /purchases/{id}/payments
+        // bankingAccountId comes from v1 treasury (matching by IBAN/name)
         let payOk=false;
-        if(kV1 && bankingAccountId){
+        let lastErr='';
+
+        // Attempt 1: v2 POST /purchases/{id}/payments with banking_account_id
+        try{
+          const body={
+            date:   isoDate(execDateObj),
+            amount: tx.amount,
+            concept:concepto||'Pago remesa SEPA',
+          };
+          if(bankingAccountId) body.banking_account_id=bankingAccountId;
+          await v2Post('/purchases/'+tx.invoiceId+'/payments',k,body);
+          payOk=true;
+          console.log('v2 pay ok invoice='+tx.invoiceId+' bank="'+accountName+'" id='+bankingAccountId);
+        }catch(e1){
+          lastErr=e1.message||String(e1);
+          console.warn('v2 pay failed:',lastErr);
+        }
+
+        // Attempt 2: v1 pay — but v1 uses different IDs, so it likely fails
+        // We try anyway with the v2 ID (might work on some Holded versions)
+        if(!payOk && kV1){
           try{
-            await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
-              date:    Math.floor(execDateObj.getTime()/1000),
-              amount:  tx.amount,
-              accountId: bankingAccountId,
-              concept: concepto||'Pago remesa SEPA',
-            });
-            payOk=true;
-            console.log('v1 pay ok: invoice='+tx.invoiceId+' account="'+accountName+'" id='+bankingAccountId);
-          }catch(e1){
-            console.error('v1 pay failed:',e1.message);
-            // Last resort: v1 without accountId (at least marks as paid)
-            try{
-              await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
-                date:   Math.floor(execDateObj.getTime()/1000),
-                amount: tx.amount,
-                concept:concepto||'Pago remesa SEPA',
-              });
-              payOk=true;
-              console.log('v1 pay ok (no account)');
-            }catch(e2){console.error('v1 pay no-account failed:',e2.message);}
-          }
-        } else if(kV1){
-          // No bankingAccountId found — pay without account assignment
-          console.warn('No bankingAccountId for IBAN='+debtorIBAN+' — paying without account');
-          try{
-            await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
+            const v1body={
               date:   Math.floor(execDateObj.getTime()/1000),
               amount: tx.amount,
               concept:concepto||'Pago remesa SEPA',
-            });
+            };
+            if(bankingAccountId) v1body.accountId=bankingAccountId;
+            await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,v1body);
             payOk=true;
-          }catch(e3){console.error('v1 pay fallback failed:',e3.message);}
+            console.log('v1 pay ok invoice='+tx.invoiceId);
+          }catch(e2){
+            lastErr=(e2.message||String(e2));
+            console.warn('v1 pay failed:',lastErr);
+          }
         }
 
-        results.push({invoiceId:tx.invoiceId,ok:payOk,bankingAccountId,accountName});
+        results.push({invoiceId:tx.invoiceId,ok:payOk,error:payOk?undefined:lastErr,bankingAccountId,accountName});
       }catch(e){
         console.error('mark-paid',tx.invoiceId,e.message);
         results.push({invoiceId:tx.invoiceId,ok:false,error:e.message});
