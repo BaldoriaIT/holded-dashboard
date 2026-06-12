@@ -203,48 +203,66 @@ app.get('/api/debug/lookups',async(req,res)=>{
 });
 
 app.get('/api/debug/facturas',async(req,res)=>{
-  const envName=req.query.env||'API_BEATA_PASTA_GROUP';
+  const envName=req.query.env||'API_BALDORIA';
   const k=apiKey(envName);
+  const kV1=apiKeyV1(envName);
   if(!k) return res.json({error:'No v2 key for: '+envName});
-  const results={};
-  // Test all lookup endpoints + 1 purchase sample
-  // Test v1 paths (via kV1) for lookups since v2 returns 403/404
-  const kV1d = apiKeyV1(envName);
-  const v1Results = {};
-  for(const ep1 of ['/invoicing/v1/expenseaccounts','/invoicing/v1/paymentmethods','/projects/v1/projects','/accounting/v1/expenseaccounts']) {
+
+  // 1. Known account ID from sample purchase
+  const knownAcctId='69a95cbe4cbc7a4e3d0424ad';
+
+  // 2. Test v2 accounting endpoints for this account ID
+  const v2accts={};
+  for(const ep of[
+    '/accounting/accounts',
+    '/accounting/accounts/'+knownAcctId,
+    '/accounting/expense-accounts',
+    '/accounting/expense-accounts/'+knownAcctId,
+    '/accounting/categories',
+    '/accounting/ledger-accounts',
+  ]){
     try{
-      const r1=await fetch('https://api.holded.com/api'+ep1+'?limit=5',{headers:{key:kV1d,'Accept':'application/json'},signal:AbortSignal.timeout(6000)});
-      const t1=await r1.text();
-      let p1=null;try{p1=JSON.parse(t1);}catch(e){}
-      const items1=Array.isArray(p1)?p1:(p1&&(p1.items||p1.data)||[]);
-      v1Results[ep1]={status:r1.status,isJson:p1!==null,itemCount:Array.isArray(items1)?items1.length:0,firstItem:Array.isArray(items1)?(items1[0]||null):null};
-    }catch(e){v1Results[ep1]={error:e.message};}
-  }
-  const endpoints=[
-    '/purchases?limit=1',
-  ];
-  for(const ep of endpoints){
-    try{
-      const r=await fetch('https://api.holded.com/api/v2'+ep,{
-        headers:{'Authorization':'Bearer '+k,'Accept':'application/json'},
-        signal:AbortSignal.timeout(8000),
-      });
-      const text=await r.text();
-      const isHtml=text.trim().startsWith('<');
-      let parsed=null;
-      if(!isHtml){try{parsed=JSON.parse(text);}catch(e){}}
-      const items=Array.isArray(parsed)?parsed:(parsed&&(parsed.data||parsed.items||[]));
-      results[ep]={
-        status:r.status,
-        isJson:!isHtml&&parsed!==null,
+      const r=await fetch('https://api.holded.com/api/v2'+ep+'?limit=5',{
+        headers:{'Authorization':'Bearer '+k},signal:AbortSignal.timeout(6000)});
+      const t=await r.text();const isHtml=t.trim().startsWith('<');
+      let p=null;try{p=JSON.parse(t);}catch(e){}
+      const items=Array.isArray(p)?p:(p&&(p.items||p.data)||[]);
+      v2accts['v2:'+ep]={status:r.status,isJson:!isHtml&&!!p,
         itemCount:Array.isArray(items)?items.length:0,
-        // Full first item to see field names
-        firstItem:Array.isArray(items)?(items[0]||null):parsed,
-      };
-    }catch(e){results[ep]={error:e.message};}
+        first:Array.isArray(items)?items[0]:(p&&!Array.isArray(p)?p:null)};
+    }catch(e){v2accts['v2:'+ep]={error:e.message};}
   }
-  res.json({envName,apiVersion:'v2+v1',timestamp:new Date().toISOString(),v2results:results,v1results:v1Results});
+
+  // 3. Test v1 accounting endpoints
+  for(const ep of[
+    '/accounting/v1/accounts',
+    '/accounting/v1/accounts/'+knownAcctId,
+    '/common/v1/accounts',
+    '/invoicing/v1/accounts/'+knownAcctId,
+  ]){
+    try{
+      const r=await fetch('https://api.holded.com/api'+ep+'?limit=5',{
+        headers:{key:kV1},signal:AbortSignal.timeout(6000)});
+      const t=await r.text();const isHtml=t.trim().startsWith('<');
+      let p=null;try{p=JSON.parse(t);}catch(e){}
+      const items=Array.isArray(p)?p:(p&&(p.items||p.data)||[]);
+      v2accts['v1:'+ep]={status:r.status,isJson:!isHtml&&!!p,
+        itemCount:Array.isArray(items)?items.length:0,
+        first:Array.isArray(items)?items[0]:(p&&!Array.isArray(p)?p:null)};
+    }catch(e){v2accts['v1:'+ep]={error:e.message};}
+  }
+
+  // 4. Sample purchase payments
+  let payments=null;
+  try{
+    const r=await fetch('https://api.holded.com/api/v2/purchases/6a2152e1d60c3a4b77037cfc/payments',{
+      headers:{'Authorization':'Bearer '+k},signal:AbortSignal.timeout(8000)});
+    const t=await r.text();payments={status:r.status,body:JSON.parse(t)};
+  }catch(e){payments={error:e.message};}
+
+  res.json({envName,knownAcctId,accountEndpoints:v2accts,samplePayments:payments});
 });
+
 
 
 // ─── GET /api/debug/balances ──────────────────────────────────────────
