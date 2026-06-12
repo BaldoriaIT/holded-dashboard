@@ -154,6 +154,15 @@ async function v2GetAll(endpoint,key,maxPages=20){
   return results;
 }
 
+// Extract meaningful cuenta name from line item description
+// e.g. "Factura de servicios de X de PROVEEDOR" → trim to useful part
+function lineItemNameClean(name) {
+  if (!name) return '';
+  // Remove "Factura de ... de PROVEEDOR" pattern, keep the service type
+  const clean = name.replace(/\s*de\s+[A-Z][A-Z\s]+S\.?[AL]\.?.*$/i,'').replace(/^Factura\s+(de\s+)?/i,'').trim();
+  return clean.length > 3 ? clean.substring(0,40) : '';
+}
+
 function purchaseStatusLabel(s){
   const m={pending:'Pendiente',draft:'Borrador',paid:'Pagado',overdue:'Vencida',partial:'Parcial',voided:'Anulada',0:'Borrador',1:'Pendiente',2:'Pagado',3:'Parcial',4:'Vencida',5:'Anulada'};
   return m[s]??String(s);
@@ -208,59 +217,37 @@ app.get('/api/debug/facturas',async(req,res)=>{
   const kV1=apiKeyV1(envName);
   if(!k) return res.json({error:'No v2 key for: '+envName});
 
-  // 1. Known account ID from sample purchase
-  const knownAcctId='69a95cbe4cbc7a4e3d0424ad';
+  const knownId='6a2152e1d60c3a4b77037cfc'; // known purchase ID
+  const knownAcctId='69a95cbe4cbc7a4e3d0424ad'; // known account ID
 
-  // 2. Test v2 accounting endpoints for this account ID
-  const v2accts={};
-  for(const ep of[
-    '/accounting/accounts',
-    '/accounting/accounts/'+knownAcctId,
-    '/accounting/expense-accounts',
-    '/accounting/expense-accounts/'+knownAcctId,
-    '/accounting/categories',
-    '/accounting/ledger-accounts',
-  ]){
-    try{
-      const r=await fetch('https://api.holded.com/api/v2'+ep+'?limit=5',{
-        headers:{'Authorization':'Bearer '+k},signal:AbortSignal.timeout(6000)});
-      const t=await r.text();const isHtml=t.trim().startsWith('<');
-      let p=null;try{p=JSON.parse(t);}catch(e){}
-      const items=Array.isArray(p)?p:(p&&(p.items||p.data)||[]);
-      v2accts['v2:'+ep]={status:r.status,isJson:!isHtml&&!!p,
-        itemCount:Array.isArray(items)?items.length:0,
-        first:Array.isArray(items)?items[0]:(p&&!Array.isArray(p)?p:null)};
-    }catch(e){v2accts['v2:'+ep]={error:e.message};}
-  }
-
-  // 3. Test v1 accounting endpoints
-  for(const ep of[
-    '/accounting/v1/accounts',
-    '/accounting/v1/accounts/'+knownAcctId,
-    '/common/v1/accounts',
-    '/invoicing/v1/accounts/'+knownAcctId,
-  ]){
-    try{
-      const r=await fetch('https://api.holded.com/api'+ep+'?limit=5',{
-        headers:{key:kV1},signal:AbortSignal.timeout(6000)});
-      const t=await r.text();const isHtml=t.trim().startsWith('<');
-      let p=null;try{p=JSON.parse(t);}catch(e){}
-      const items=Array.isArray(p)?p:(p&&(p.items||p.data)||[]);
-      v2accts['v1:'+ep]={status:r.status,isJson:!isHtml&&!!p,
-        itemCount:Array.isArray(items)?items.length:0,
-        first:Array.isArray(items)?items[0]:(p&&!Array.isArray(p)?p:null)};
-    }catch(e){v2accts['v1:'+ep]={error:e.message};}
-  }
-
-  // 4. Sample purchase payments
-  let payments=null;
+  // Test: fetch same purchase via v1 — does it have account name?
+  let v1Purchase=null;
   try{
-    const r=await fetch('https://api.holded.com/api/v2/purchases/6a2152e1d60c3a4b77037cfc/payments',{
-      headers:{'Authorization':'Bearer '+k},signal:AbortSignal.timeout(8000)});
-    const t=await r.text();payments={status:r.status,body:JSON.parse(t)};
-  }catch(e){payments={error:e.message};}
+    const r=await fetch('https://api.holded.com/api/invoicing/v1/documents/'+knownId,{
+      headers:{key:kV1,'Accept':'application/json'},signal:AbortSignal.timeout(8000)});
+    const t=await r.text();const isHtml=t.trim().startsWith('<');
+    v1Purchase={status:r.status,isHtml,body:isHtml?null:JSON.parse(t)};
+  }catch(e){v1Purchase={error:e.message};}
 
-  res.json({envName,knownAcctId,accountEndpoints:v2accts,samplePayments:payments});
+  // Test: v1 list of documents — do they have account names?
+  let v1List=null;
+  try{
+    const r=await fetch('https://api.holded.com/api/invoicing/v1/documents?docType=purchase&limit=1',{
+      headers:{key:kV1,'Accept':'application/json'},signal:AbortSignal.timeout(8000)});
+    const t=await r.text();const isHtml=t.trim().startsWith('<');
+    v1List={status:r.status,isHtml,keys:isHtml?[]:Object.keys(JSON.parse(t)[0]||{})};
+  }catch(e){v1List={error:e.message};}
+
+  // Test v2 payments endpoint
+  let v2pay=null;
+  try{
+    const r=await fetch('https://api.holded.com/api/v2/purchases/'+knownId+'/payments',{
+      headers:{'Authorization':'Bearer '+k},signal:AbortSignal.timeout(8000)});
+    const t=await r.text();
+    v2pay={status:r.status,isHtml:t.trim().startsWith('<'),preview:t.substring(0,200)};
+  }catch(e){v2pay={error:e.message};}
+
+  res.json({envName,v1Purchase,v1List,v2pay,tip:'Check v1Purchase.body for accountName field'});
 });
 
 
@@ -408,7 +395,10 @@ app.get('/api/facturas',async(req,res)=>{
           // Resolve field values
           const lineAccountId=(inv.lines&&inv.lines[0])?inv.lines[0].account||'':'';
           const lineProjectId=(inv.lines&&inv.lines[0])?inv.lines[0].project_id||'':'';
-          const cuentaName=acctMap[lineAccountId]||'';
+          // acctMap populated from v1 /invoicing/v1/expenseaccounts (when available)
+          // Fallback: use line name as cuenta description
+          const lineItemName=(inv.lines&&inv.lines[0])?inv.lines[0].name||'':'';
+          const cuentaName=acctMap[lineAccountId]||(lineAccountId?lineItemNameClean(lineItemName):'');
           const pmName=pmMap[inv.payment_method_id]||'';
           const projName=projMap[lineProjectId]||'';
 
@@ -648,42 +638,46 @@ app.post('/api/mark-paid',async(req,res)=>{
           paymentBody.bank_account_id=bankingAccountId;
           paymentBody.treasury_account_id=bankingAccountId;
         }
-        let payOk=false, paymentId=null;
-
-        // Strategy 1: v2 POST /purchases/{id}/payments
-        try {
-          const payResp=await v2Post('/purchases/'+tx.invoiceId+'/payments',k,paymentBody);
-          payOk=true;
-          // Try to get payment ID from response to patch it with banco account
-          paymentId=payResp?.id||payResp?.payment_id||payResp?.data?.id||null;
-          console.log('v2 payment ok, id=',paymentId,'bankingAccountId=',bankingAccountId);
-          // If payment was created but without banking_account_id, patch it
-          if(paymentId && bankingAccountId){
-            try{
-              await v2Fetch('PATCH','/purchases/'+tx.invoiceId+'/payments/'+paymentId,k,{banking_account_id:bankingAccountId});
-              console.log('v2 payment patched with bankingAccountId');
-            }catch(ep){console.warn('patch payment:',ep.message);}
-          }
-        } catch(e2) {
-          console.warn('v2 payment failed:',e2.message,', trying v1...');
-        }
-
-        // Strategy 2: v1 fallback — directly uses accountId (confirmed field name in v1)
-        if(!payOk && kV1) {
+        // Use v1 exclusively — v2 /purchases/{id}/payments returns HTML (not in production)
+        // v1 /invoicing/v1/documents/{id}/pay accepts accountId = treasury account ID
+        let payOk=false;
+        if(kV1 && bankingAccountId){
           try{
             await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
-              date: Math.floor(execDateObj.getTime()/1000),
-              amount: tx.amount,
+              date:    Math.floor(execDateObj.getTime()/1000),
+              amount:  tx.amount,
               accountId: bankingAccountId,
-              account: bankingAccountId,
               concept: concepto||'Pago remesa SEPA',
             });
             payOk=true;
-            console.log('v1 payment ok with accountId=',bankingAccountId);
-          }catch(e3){console.error('v1 payment failed:',e3.message);}
+            console.log('v1 pay ok: invoice='+tx.invoiceId+' account="'+accountName+'" id='+bankingAccountId);
+          }catch(e1){
+            console.error('v1 pay failed:',e1.message);
+            // Last resort: v1 without accountId (at least marks as paid)
+            try{
+              await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
+                date:   Math.floor(execDateObj.getTime()/1000),
+                amount: tx.amount,
+                concept:concepto||'Pago remesa SEPA',
+              });
+              payOk=true;
+              console.log('v1 pay ok (no account)');
+            }catch(e2){console.error('v1 pay no-account failed:',e2.message);}
+          }
+        } else if(kV1){
+          // No bankingAccountId found — pay without account assignment
+          console.warn('No bankingAccountId for IBAN='+debtorIBAN+' — paying without account');
+          try{
+            await v1Fetch('POST','/invoicing/v1/documents/'+tx.invoiceId+'/pay',kV1,{
+              date:   Math.floor(execDateObj.getTime()/1000),
+              amount: tx.amount,
+              concept:concepto||'Pago remesa SEPA',
+            });
+            payOk=true;
+          }catch(e3){console.error('v1 pay fallback failed:',e3.message);}
         }
 
-        results.push({invoiceId:tx.invoiceId,ok:payOk,bankingAccountId,accountName,paymentId});
+        results.push({invoiceId:tx.invoiceId,ok:payOk,bankingAccountId,accountName});
       }catch(e){
         console.error('mark-paid',tx.invoiceId,e.message);
         results.push({invoiceId:tx.invoiceId,ok:false,error:e.message});
