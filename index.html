@@ -1620,7 +1620,7 @@ async function markPaid(transactions, debtorIBAN, fechaRemesa, concepto, debtorA
   if(!confirm('¿Marcar '+transactions.length+' factura(s) como PAGADAS en Holded?\n\nCuenta: '+ibanShort(debtorIBAN)+'\nFecha: '+fechaRemesa)) return;
   document.getElementById('modal-footer').innerHTML='<div style="color:var(--ink4);font-size:13px">⏳ Marcando facturas como pagadas en Holded...</div>';
   try {
-    const enriched=transactions.map(tx=>{const f=FACTURAS_ALL.find(x=>x.holdedId===tx.invoiceId||x.id===tx.invoiceId);return{...tx,sociedad:f?.sociedad||tx.sociedad||''};});
+    const enriched=transactions.map(tx=>{const f=FACTURAS_ALL.find(x=>x.holdedId===tx.invoiceId||x.id===tx.invoiceId);return{...tx,sociedad:f?.sociedad||tx.sociedad||'',docNumber:tx.docNumber||tx.document_number||f?.num||''};});
     const res=await fetch(API_BASE+'/api/mark-paid',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({transactions:enriched,debtorIBAN,debtorAccountName:debtorAccountName||'',fechaRemesa,concepto})
