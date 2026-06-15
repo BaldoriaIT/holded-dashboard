@@ -1586,10 +1586,13 @@ async function executeCreateSEPA() {
 
     var remesaInfo =
       '<div style="margin-top:16px;padding:14px;background:rgba(42,122,86,0.08);border-radius:8px;border:1px solid rgba(42,122,86,0.2)">' +
-      '<div style="color:var(--green);font-size:13px;font-weight:500;margin-bottom:4px">✅ XML descargado · ' + json.count + ' transacciones · ' + fmt(json.total) + '</div>' +
-      (json.remesaId
-        ? '<div style="font-size:10.5px;color:var(--ink4)">ID Holded: '+json.remesaId+'</div>'
-        : '<div style="font-size:10.5px;color:var(--amber)">⚠ No se pudo registrar en Holded (no bloqueante)</div>') +
+      '<div style="color:var(--green);font-size:14px;font-weight:600;margin-bottom:8px">✅ Remesa creada correctamente</div>' +
+      '<div style="font-size:12px;color:var(--ink2);line-height:1.8">' +
+        '📄 XML descargado: <strong>' + json.count + ' transacciones · ' + fmt(json.total) + '</strong><br>' +
+        (json.remesaId
+          ? '🏦 Registrada en Holded Tesorería → Remesas <span style="color:var(--ink4);font-size:10px">(ID: '+json.remesaId+')</span>'
+          : '⚠️ No se pudo registrar en Holded (verifica permisos API de Tesorería)') +
+      '</div>' +
       '</div>';
     document.getElementById('modal-body').innerHTML += remesaInfo;
 
