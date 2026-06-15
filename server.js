@@ -58,18 +58,13 @@ const ACCOUNTS_MAP = [
 ];
 
 // ─── ACCOUNT NAMES MAP ───────────────────────────────────────────────
-// Maps Holded expense account IDs → Cuenta name shown in Holded
-// Run /api/debug/accounts to get the list of IDs with sample invoice info
-// Then fill in: { 'ID': 'Nombre cuenta (sin los 8 números)', ... }
-// Example: '69a95cbe4cbc7a4e3d0424ad': 'Pequeño equipamiento terraza'
-// These IDs never change — fill once, works forever.
-const ACCOUNT_NAMES_MAP = {
-  // FILL IN AFTER RUNNING /api/debug/accounts
-};
+// Maps Holded expense account IDs → readable names (from /api/debug/accounts)
+// Fill in after running /api/debug/accounts — these never change
+const ACCOUNT_NAMES_MAP = {};
 
-// ─── TREASURY ACCOUNT IDS (hardcoded from Holded) ───────────────────
-// Maps holdedName → Holded treasury account ID
-// Used for mark-paid banking_account_id resolution (bypasses v1 API)
+// ─── TREASURY ACCOUNT IDS ────────────────────────────────────────────
+// Hardcoded from Holded — holdedName → treasury account ID
+// Used by mark-paid to assign the correct banking account
 const TREASURY_ID_MAP = {
   'BALDORIA SANTANDER': '6848549e51ebcaed81069faf',
   'HOLDING SANTANDER': '68485ad483f8a5cc8a010698',
@@ -105,6 +100,7 @@ const TREASURY_ID_MAP = {
   'GOYA BANKINTER': '6942dbc972ee4b725b0f3f6c',
   'SUR CAIXA': '6a26e6bda9ece85c2f0fed06',
 };
+
 const SOC_API = {};
 ACCOUNTS_MAP.forEach(a => { SOC_API[a.sociedad] = a.apiKeyEnv; });
 
@@ -375,24 +371,24 @@ app.get('/api/facturas',async(req,res)=>{
       try{
         // Fetch purchases (v2) + lookup tables (v1 — v2 endpoints return 403/404)
         const kV1lookup = apiKeyV1(envName);
-        const [pendRes,ovrRes,parRes,pmRes,projRes,v1PurchRes]=await Promise.allSettled([
+        const [pendRes,ovrRes,parRes,acctRes,pmRes,projRes]=await Promise.allSettled([
           v2GetAll('/purchases?status=pending',k),
           v2GetAll('/purchases?status=overdue',k),
           v2GetAll('/purchases?status=partial',k),
+          // Expense accounts — v1 works, v2 returns 404
+          // Expense accounts: all known endpoints return HTML — skip for now
+          // cuenta names will be resolved per-invoice via v2 after fetch
+          Promise.resolve([]),
           // Payment methods: confirmed at /invoicing/v1/paymentmethods
           kV1lookup ? v1GetAll('/invoicing/v1/paymentmethods',kV1lookup).catch(()=>[]) : Promise.resolve([]),
-          // Projects
+          // Projects: try multiple v1 paths
           kV1lookup ? (async()=>{
-            for(const ep of['/projects/v1/projects','/invoicing/v1/projects']){
+            for(const ep of['/projects/v1/projects','/invoicing/v1/projects','/projects/v1/list']){
               try{const r=await v1GetAll(ep,kV1lookup);if(r&&r.length>0)return r;}catch(e){}
             }
             return [];
           })() : Promise.resolve([]),
-          // V1 purchases returns HTML — skip
-          Promise.resolve([]),
         ]);
-        // acctRes placeholder (unused, kept for variable count)
-        const acctRes={status:'fulfilled',value:[]};
 
         let rawInvoices=[];
         [pendRes,ovrRes,parRes].forEach(r=>{if(r.status==='fulfilled'&&Array.isArray(r.value))rawInvoices=rawInvoices.concat(r.value);});
@@ -411,31 +407,9 @@ app.get('/api/facturas',async(req,res)=>{
           [saleP,saleO].forEach(r=>{if(r.status==='fulfilled'&&Array.isArray(r.value))rawSales=rawSales.concat(r.value);});
         }catch(e){}
 
-        // Build lookup maps
+        // Build lookup maps: ID → name
         const acctMap={},pmMap={},projMap={};
-        // docNumCuentaMap: document_number → account name (from v1 purchases)
-        const docNumCuentaMap={};
-        // Helper: extract name from "621001 Arrendamientos y cánones" → "Arrendamientos y cánones"
-        const extractCuentaName = (raw) => {
-          if (!raw) return '';
-          // Remove leading digits (account code) e.g. "621001 " or "62100001 "
-          const m = String(raw).match(/^\d{4,10}\s+(.+)$/);
-          return m ? m[1].trim() : String(raw).trim();
-        };
-
-        if(v1PurchRes.status==='fulfilled'&&Array.isArray(v1PurchRes.value)){
-          v1PurchRes.value.forEach(doc=>{
-            const docNum=doc.docNumber||doc.num||doc.ref||'';
-            // v1 returns account as "621001 Nombre" string in these fields:
-            const rawCuenta=doc.account||doc.accountName||doc.accountCode||
-              (doc.items&&doc.items[0]&&(doc.items[0].account||doc.items[0].accountName))||
-              (doc.lines&&doc.lines[0]&&(doc.lines[0].account||doc.lines[0].accountName))||'';
-            const cuentaV1 = extractCuentaName(rawCuenta);
-            if(docNum && cuentaV1) docNumCuentaMap[docNum]=cuentaV1;
-            // Also index by id in case document_number cross-reference fails
-            if(doc.id && cuentaV1) docNumCuentaMap['id:'+doc.id]=cuentaV1;
-          });
-        }
+        // acctRes is empty (no working endpoint) — resolve per-ID via v2 below
         if(pmRes.status==='fulfilled'&&Array.isArray(pmRes.value))
           pmRes.value.forEach(p=>{if(p.id) pmMap[p.id]=p.name||p.payment_method||'';});
         if(projRes.status==='fulfilled'&&Array.isArray(projRes.value))
@@ -491,14 +465,15 @@ app.get('/api/facturas',async(req,res)=>{
           // acctMap populated from v1 /invoicing/v1/expenseaccounts (when available)
           // Fallback: use line name as cuenta description
           const lineItemName=(inv.lines&&inv.lines[0])?inv.lines[0].name||'':'';
-          // Cuenta: cross-reference v1 purchase by document_number OR id
-          const invDocNum=inv.document_number||inv.docNumber||inv.number||'';
-          const invId=inv.id||inv._id||'';
-          const cuentaName=ACCOUNT_NAMES_MAP[lineAccountId]
-            ||docNumCuentaMap[invDocNum]
-            ||docNumCuentaMap['id:'+invId]
-            ||acctMap[lineAccountId]
-            ||'';
+          // Cuenta: check ACCOUNT_NAMES_MAP first (user-populated from Holded)
+          // Format in Holded: "62100001 Compras de mercancías" → we want "Compras de mercancías"
+          const extractAfterCode = (s) => {
+            if (!s) return '';
+            const m = String(s).match(/^\d{6,10}\s+(.+)$/);
+            return m ? m[1].trim() : s.trim();
+          };
+          const cuentaRaw = ACCOUNT_NAMES_MAP[lineAccountId] || acctMap[lineAccountId] || '';
+          const cuentaName = cuentaRaw ? extractAfterCode(cuentaRaw) : (lineAccountId ? lineItemNameClean(lineItemName) : '');
           const pmName=pmMap[inv.payment_method_id]||'';
           const projName=projMap[lineProjectId]||'';
 
@@ -702,22 +677,21 @@ app.post('/api/mark-paid',async(req,res)=>{
       const kV1=apiKeyV1(envName);
       if(!k){results.push({invoiceId:tx.invoiceId,ok:false,error:'Sin API key para sociedad: '+(tx.sociedad||'desconocida')});continue;}
       try{
-        // Get bank account ID — use hardcoded TREASURY_ID_MAP (bypasses API rate limits)
-        let bankingAccountId='';
-        let accountName='';
-        // Find the holdedName for this IBAN from ACCOUNTS_MAP
-        const cleanIBAN=debtorIBAN.replace(/[\s-]/g,'').toUpperCase();
-        const accEntry=ACCOUNTS_MAP.find(a=>a.iban.replace(/[\s-]/g,'').toUpperCase()===cleanIBAN);
-        if(accEntry){
-          accountName=accEntry.holdedName;
-          bankingAccountId=TREASURY_ID_MAP[accEntry.holdedName]||'';
+        // Get bank account ID — direct lookup from hardcoded TREASURY_ID_MAP
+        // No API call needed — bypasses rate limits and v1/v2 auth issues
+        let bankingAccountId = '';
+        let accountName = '';
+        const cleanIBAN = debtorIBAN.replace(/[\s-]/g,'').toUpperCase();
+        const accEntry = ACCOUNTS_MAP.find(a => a.iban.replace(/[\s-]/g,'').toUpperCase() === cleanIBAN);
+        if (accEntry) {
+          accountName      = accEntry.holdedName;
+          bankingAccountId = TREASURY_ID_MAP[accEntry.holdedName] || '';
         }
-        // Fallback: match by debtorAccountName if IBAN lookup failed
-        if(!bankingAccountId && debtorAccountName){
-          bankingAccountId=TREASURY_ID_MAP[debtorAccountName]||'';
-          accountName=debtorAccountName;
+        if (!bankingAccountId && debtorAccountName) {
+          bankingAccountId = TREASURY_ID_MAP[debtorAccountName] || '';
+          if (!accountName) accountName = debtorAccountName;
         }
-        console.log('treasury: "'+accountName+'" id='+bankingAccountId+' iban='+debtorIBAN);
+        console.log('mark-paid account: "'+accountName+'" id='+bankingAccountId+' iban='+debtorIBAN);
         // POST payment — try all known field names for banking account
         const paymentBody={
           date:isoDate(execDateObj),
@@ -736,14 +710,13 @@ app.post('/api/mark-paid',async(req,res)=>{
           date:    isoDate(execDateObj),
           amount:  tx.amount,
           concept: concepto||'Pago remesa SEPA',
-          notes:   accountName ? 'Cuenta: '+accountName+' ('+debtorIBAN+')' : ('IBAN: '+debtorIBAN),
+          notes:   accountName ? 'Cuenta: '+accountName : undefined,
         };
         if (bankingAccountId) {
-          // Try all known field names — Holded v2 docs are inconsistent
+          // Try all known Holded v2 field names for banking account
           v2PayBody.banking_account_id  = bankingAccountId;
           v2PayBody.treasury_account_id = bankingAccountId;
           v2PayBody.account_id          = bankingAccountId;
-          v2PayBody.bankAccountId       = bankingAccountId;
         }
 
         let payOk = false;
@@ -787,37 +760,65 @@ app.post('/api/mark-paid',async(req,res)=>{
   }catch(err){res.status(500).json({success:false,error:err.message});}
 });
 
+
+// ─── GET /api/debug/test-payment ─────────────────────────────────────
+// Tests what field name Holded v2 uses for banking account in payments
+// Usage: /api/debug/test-payment?env=API_BALDORIA&invoiceId=XXX&dryRun=1
+app.get('/api/debug/test-payment', async (req, res) => {
+  const envName = req.query.env || 'API_BALDORIA';
+  const invoiceId = req.query.invoiceId;
+  const dryRun = req.query.dryRun === '1';
+  const k = apiKey(envName);
+  if (!k) return res.json({error:'No v2 key for '+envName});
+  if (!invoiceId) return res.json({error:'Need ?invoiceId=XXX', 
+    tip:'Get an invoiceId from /api/facturas and pass it here'});
+
+  // First get the invoice details to confirm it exists
+  let invoice = null;
+  try {
+    const r = await fetch('https://api.holded.com/api/v2/purchases/'+invoiceId, {
+      headers:{'Authorization':'Bearer '+k}, signal:AbortSignal.timeout(8000)
+    });
+    const t = await r.text();
+    invoice = {status:r.status, isHtml:t.startsWith('<'), preview:t.substring(0,300)};
+  } catch(e) { invoice = {error:e.message}; }
+
+  if (dryRun) {
+    return res.json({dryRun:true, invoice, 
+      message:'Add dryRun=0 to actually test payment', 
+      knownBankIds:Object.entries(TREASURY_ID_MAP).slice(0,5)});
+  }
+
+  // Try each possible field name with amount=0.01
+  const bankId = '6848549e51ebcaed81069faf'; // BALDORIA SANTANDER
+  const attempts = [];
+  for (const [field, value] of [
+    ['banking_account_id', bankId],
+    ['treasury_account_id', bankId],
+    ['account_id', bankId],
+    ['bankAccountId', bankId],
+    ['bank_account_id', bankId],
+  ]) {
+    const body = {date:isoDate(new Date()), amount:0.01, concept:'TEST borrar', [field]:value};
+    try {
+      const r = await fetch('https://api.holded.com/api/v2/purchases/'+invoiceId+'/payments', {
+        method:'POST', headers:{'Authorization':'Bearer '+k,'Content-Type':'application/json'},
+        body:JSON.stringify(body), signal:AbortSignal.timeout(8000)
+      });
+      const t = await r.text();
+      let parsed; try{parsed=JSON.parse(t);}catch(e){parsed=t.substring(0,200);}
+      attempts.push({field, status:r.status, ok:r.ok, response:parsed});
+      if (r.ok) break; // stop on first success
+    } catch(e) { attempts.push({field, error:e.message}); }
+  }
+  res.json({envName, invoiceId, bankId, attempts});
+});
+
 app.listen(PORT,()=>console.log('✅ Servidor en puerto '+PORT+' — V1 treasury + V2 purchases'));
 
 // ─── GET /api/debug/accounts ─────────────────────────────────────────
 // Lists all unique expense account IDs found across ALL societies
 // Run once, copy the IDs, fill in ACCOUNT_NAMES_MAP above
-app.get('/api/debug/v1purchase', async (req, res) => {
-  // Shows the raw v1 purchase document to find the account name field
-  const envName = req.query.env || 'API_BALDORIA';
-  const kV1 = apiKeyV1(envName);
-  if (!kV1) return res.json({ error: 'No v1 key for: ' + envName });
-  try {
-    const docs = await v1GetAll('/invoicing/v1/documents?docType=purchase', kV1);
-    const sample = docs.slice(0, 3).map(doc => ({
-      id: doc.id,
-      docNumber: doc.docNumber || doc.num,
-      // Show ALL fields that might contain account name
-      account:     doc.account,
-      accountName: doc.accountName,
-      accountCode: doc.accountCode,
-      category:    doc.category,
-      // Show first line fields
-      line0: doc.items?.[0] || doc.lines?.[0] || null,
-      // All top-level keys
-      allKeys: Object.keys(doc),
-    }));
-    res.json({ envName, count: docs.length, sample });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 app.get('/api/debug/accounts', async (req, res) => {
   const allIds = {};
   const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
@@ -830,12 +831,7 @@ app.get('/api/debug/accounts', async (req, res) => {
       purchases.forEach(inv => {
         if (inv.lines) inv.lines.forEach(l => {
           if (l.account) {
-            if (!allIds[l.account]) allIds[l.account] = {
-              count: 0, societies: [],
-              sampleInvoiceNum: inv.document_number||'',
-              sampleLineName: l.name||'',
-              currentMapping: ACCOUNT_NAMES_MAP[l.account]||'⚠ NOT MAPPED',
-            };
+            if (!allIds[l.account]) allIds[l.account] = { count: 0, societies: [], sampleLineName: l.name || '' };
             allIds[l.account].count++;
             if (!allIds[l.account].societies.includes(soc)) allIds[l.account].societies.push(soc);
           }
@@ -846,15 +842,7 @@ app.get('/api/debug/accounts', async (req, res) => {
   }
   const sorted = Object.entries(allIds)
     .sort((a, b) => b[1].count - a[1].count)
-    .map(([id, info]) => ({
-      id, count: info.count, societies: info.societies,
-      sampleInvoiceNum: info.sampleInvoiceNum,
-      sampleLineName: info.sampleLineName,
-      currentMapping: info.currentMapping,
-    }));
-  res.json({
-    total: sorted.length,
-    accounts: sorted,
-    howToFix: 'In server.js, find ACCOUNT_NAMES_MAP and add: "' + (sorted[0]?.id||'ID') + '": "Nombre sin los numeros"',
-  });
+    .map(([id, info]) => ({ id, count: info.count, societies: info.societies, sampleLineName: info.sampleLineName }));
+  res.json({ total: sorted.length, accounts: sorted,
+    instructions: 'Add entries to ACCOUNT_NAMES_MAP in server.js: { "ID": "Nombre cuenta" }' });
 });
