@@ -757,11 +757,13 @@ app.post('/api/create-remesa',async(req,res)=>{
     if(!selected.length) return res.status(400).json({success:false,error:'No se encontraron las facturas en Holded'});
 
     const transactions=selected.map(inv=>({
-      creditorName:inv.contact_name||inv.contactName||'',
-      creditorIBAN:inv.contact_iban||inv.iban||'',
-      amount:inv.payments_pending!==undefined?ph(inv.payments_pending):Math.max(0,ph(inv.total??inv.amount??0)-ph(inv.paid??inv.amountPaid??0)),
-      concept:'Documento '+(inv.document_number||inv.num||inv.id),
-      invoiceId:inv.id||inv._id,
+      creditorName:    inv.contact_name||inv.contactName||'',
+      creditorIBAN:    inv.contact_iban||inv.iban||'',
+      amount:          inv.payments_pending!==undefined?ph(inv.payments_pending):Math.max(0,ph(inv.total??inv.amount??0)-ph(inv.paid??inv.amountPaid??0)),
+      concept:         'Documento '+(inv.document_number||inv.num||inv.id),
+      invoiceId:       inv.id||inv._id,
+      docNumber:       inv.document_number||inv.docNumber||inv.num||'',
+      document_number: inv.document_number||inv.docNumber||inv.num||'',
     }));
     const total=transactions.reduce((s,t)=>s+t.amount,0);
     const execDateObj=fechaRemesa?new Date(fechaRemesa.split('/').reverse().join('-')):new Date();
@@ -811,7 +813,7 @@ app.post('/api/create-remesa',async(req,res)=>{
     }catch(e){console.warn('remesa registration (non-fatal):',e.message);}
 
     res.json({success:true,xml,remesaId:holdedRemesaId,msgId,total,count:transactions.length,execDate,concepto,
-      transactions:transactions.map(t=>({creditorName:t.creditorName,creditorIBAN:t.creditorIBAN,amount:t.amount,concept:t.concept,invoiceId:t.invoiceId}))});
+      transactions:transactions.map(t=>({creditorName:t.creditorName,creditorIBAN:t.creditorIBAN,amount:t.amount,concept:t.concept,invoiceId:t.invoiceId,docNumber:t.docNumber||'',document_number:t.document_number||''}))});
   }catch(err){res.status(500).json({success:false,error:err.message});}
 });
 
@@ -865,52 +867,69 @@ app.post('/api/mark-paid',async(req,res)=>{
           paymentBody.bank_account_id=bankingAccountId;
           paymentBody.treasury_account_id=bankingAccountId;
         }
-        // Mark as paid via v2 POST /purchases/{id}/payments
-        // bankingAccountId from v1 treasury (matched by IBAN/holdedName)
-        const v2PayBody = {
-          date:    isoDate(execDateObj),
-          amount:  tx.amount,
-          concept: concepto||'Pago remesa SEPA',
-          notes:   accountName ? 'Cuenta: '+accountName : undefined,
-        };
-        if (bankingAccountId) {
-          // Try all known Holded v2 field names for banking account
-          v2PayBody.banking_account_id  = bankingAccountId;
-          v2PayBody.treasury_account_id = bankingAccountId;
-          v2PayBody.account_id          = bankingAccountId;
-        }
+        // Strategy: find v1 document ID by searching docNumber, then pay via v1
+        // v1 /invoicing/v1/documents/{id}/pay accepts accountId = treasury account ID
+        // This is the only confirmed path that assigns the banking account in Holded
 
+        const docNumber = tx.docNumber || tx.document_number || '';
+        let v1DocId = tx.v1DocId || ''; // may be passed if known
         let payOk = false;
         let lastError = '';
 
-        // Attempt 1: v2
-        try {
-          await v2Post('/purchases/'+tx.invoiceId+'/payments', k, v2PayBody);
-          payOk = true;
-          console.log('v2 pay ✅ invoice='+tx.invoiceId+' account="'+accountName+'" bankId='+bankingAccountId);
-        } catch(e1) {
-          lastError = (e1.message||String(e1));
-          console.warn('v2 pay failed:', lastError);
-        }
-
-        // Attempt 2: v1 (uses same v2 ID — may fail for old invoices)
-        if (!payOk && kV1) {
+        // Step 1: find v1 document ID by docNumber (v1 uses different IDs than v2)
+        if (!v1DocId && docNumber && kV1) {
           try {
-            await v1Fetch('POST', '/invoicing/v1/documents/'+tx.invoiceId+'/pay', kV1, {
-              date:      Math.floor(execDateObj.getTime()/1000),
-              amount:    tx.amount,
-              accountId: bankingAccountId||undefined,
-              concept:   concepto||'Pago remesa SEPA',
-            });
-            payOk = true;
-            console.log('v1 pay ✅ invoice='+tx.invoiceId);
-          } catch(e2) {
-            lastError = (e2.message||String(e2));
-            console.warn('v1 pay failed:', lastError);
+            // Search v1 documents by docNumber
+            const v1docs = await v1Get(
+              '/invoicing/v1/documents?docType=purchase&docNum='+encodeURIComponent(docNumber), kV1
+            );
+            const arr = Array.isArray(v1docs) ? v1docs : (v1docs?.items || v1docs?.data || []);
+            const found = arr.find(d => (d.docNumber||d.num||'').toString() === docNumber.toString());
+            if (found) {
+              v1DocId = found.id || found._id || '';
+              console.log('v1 doc found: docNumber='+docNumber+' v1Id='+v1DocId);
+            } else {
+              console.warn('v1 doc not found for docNumber='+docNumber+', trying direct v2 ID');
+            }
+          } catch(e0) {
+            console.warn('v1 doc search failed:', e0.message);
           }
         }
 
-        results.push({invoiceId:tx.invoiceId, ok:payOk, error:payOk?undefined:lastError, bankingAccountId, accountName});
+        // Step 2: pay via v1 with accountId (assigns banking account)
+        const v1PayId = v1DocId || tx.invoiceId; // fallback to v2 ID if v1 ID not found
+        if (kV1) {
+          try {
+            const payBody = {
+              date:      Math.floor(execDateObj.getTime()/1000),
+              amount:    tx.amount,
+              concept:   concepto || 'Pago remesa SEPA',
+            };
+            if (bankingAccountId) payBody.accountId = bankingAccountId;
+            await v1Fetch('POST', '/invoicing/v1/documents/'+v1PayId+'/pay', kV1, payBody);
+            payOk = true;
+            console.log('v1 pay ✅ v1DocId='+v1DocId+' account="'+accountName+'" bankId='+bankingAccountId);
+          } catch(e1) {
+            lastError = e1.message || String(e1);
+            console.warn('v1 pay failed ('+v1PayId+'):', lastError);
+            // Fallback: try v2 payment (no banking account but at least marks as paid)
+            try {
+              await v2Post('/purchases/'+tx.invoiceId+'/payments', k, {
+                date:   isoDate(execDateObj),
+                amount: tx.amount,
+                concept:concepto || 'Pago remesa SEPA',
+              });
+              payOk = true;
+              lastError = 'Pagado via v2 (sin cuenta bancaria — verifique permisos API)';
+              console.log('v2 pay fallback ✅ (no banking account)');
+            } catch(e2) {
+              lastError = e2.message || String(e2);
+              console.error('all payment attempts failed:', lastError);
+            }
+          }
+        }
+
+        results.push({invoiceId:tx.invoiceId, ok:payOk, error:payOk?undefined:lastError, bankingAccountId, accountName, v1DocId});
       }catch(e){
         const errMsg = (e && (e.message || String(e))) || 'Error desconocido';
         console.error('mark-paid',tx.invoiceId,errMsg);
