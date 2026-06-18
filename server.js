@@ -12,14 +12,14 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ─── MAPS ─────────────────────────────────────────────────────────────
 const BIC_MAP = {
-  SANTANDER:'BSCHESMM', SABADELL:'BSABESBB', ABANCA:'ABNAESMM',
-  BBVA:'BBVAESMM', BANKINTER:'BKBKESMM', CAIXA:'CAIXESBB',
+  SANTANDER:'BSCHESMMXXX', SABADELL:'BSABESBBXXX', ABANCA:'ABNAESMMXXX',
+  BBVA:'BBVAESMMXXX', BANKINTER:'BKBKESMMXXX', CAIXA:'CAIXESBBXXX',
 };
 const CIF_MAP = {
-  'BALDORIA GROUP':'B10593044000','BEATA BALDORIA':'B56221948000',
-  'BEATA PASTA GROUP':'B56305527000','BEATA PASTA GV':'B75660381000',
-  'BEATA PASTA SMART':'B21782412000','BEATA PASTA FELIPE':'B21779517000',
-  'BEATA PASTA CALEIDO':'B23845951000','BEATA PASTA SUR':'B23845944000',
+  'BALDORIA GROUP':'B10593044','BEATA BALDORIA':'B56221948',
+  'BEATA PASTA GROUP':'B56305527','BEATA PASTA GV':'B75660381',
+  'BEATA PASTA SMART':'B21782412','BEATA PASTA FELIPE':'B21779517',
+  'BEATA PASTA CALEIDO':'B23845951','BEATA PASTA SUR':'B23845944',
 };
 const ACCOUNTS_MAP = [
   { holdedName:'BALDORIA SANTANDER',   banco:'SANTANDER', sociedad:'BALDORIA GROUP',      restaurante:'Baldoria',   iban:'ES5100496733262116292134', color:'#84ceff', apiKeyEnv:'API_BALDORIA' },
@@ -260,18 +260,6 @@ const TREASURY_ID_MAP = {
   'BILBAO BANKINTER': '6a26e5c6eb312f15360766c9',
   'GOYA BANKINTER': '6942dbc972ee4b725b0f3f6c',
   'SUR CAIXA': '6a26e6bda9ece85c2f0fed06',
-};
-
-// Legal names for XML (as they appear in Holded)
-const COMPANY_NAMES_MAP = {
-  'BALDORIA GROUP':      'BALDORIA GROUP SL.',
-  'BEATA BALDORIA':      'BEATA BALDORIA SL.',
-  'BEATA PASTA GROUP':   'BEATA PASTA GROUP SL.',
-  'BEATA PASTA GV':      'BEATA PASTA GV SL.',
-  'BEATA PASTA SMART':   'BEATA PASTA SMART SL.',
-  'BEATA PASTA FELIPE':  'BEATA PASTA FELIPE SL.',
-  'BEATA PASTA CALEIDO': 'BEATA PASTA CALEIDO SL.',
-  'BEATA PASTA SUR':     'BEATA PASTA SUR SL.',
 };
 
 const SOC_API = {};
@@ -798,64 +786,31 @@ app.post('/api/create-remesa',async(req,res)=>{
       '<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03 pain.001.001.03.xsd">'+
       '<CstmrCdtTrfInitn><GrpHdr><MsgId>'+msgId+'</MsgId><CreDtTm>'+creaDtTm+'</CreDtTm>'+
       '<NbOfTxs>'+transactions.length+'</NbOfTxs><CtrlSum>'+total.toFixed(2)+'</CtrlSum>'+
-      '<InitgPty><Nm>'+escapeXml(COMPANY_NAMES_MAP[sociedad]||sociedad)+'</Nm><Id><OrgId><Othr><Id>'+escapeXml(cif)+'</Id></Othr></OrgId></Id></InitgPty>'+
+      '<InitgPty><Nm>'+escapeXml(sociedad)+'</Nm><Id><OrgId><Othr><Id>'+escapeXml(cif)+'</Id></Othr></OrgId></Id></InitgPty>'+
       '</GrpHdr><PmtInf><PmtInfId>'+msgId+'/1</PmtInfId><PmtMtd>TRF</PmtMtd><BtchBookg>false</BtchBookg>'+
       '<NbOfTxs>'+transactions.length+'</NbOfTxs><CtrlSum>'+total.toFixed(2)+'</CtrlSum>'+
       '<PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf>'+
       '<ReqdExctnDt>'+execDate+'</ReqdExctnDt>'+
-      '<Dbtr><Nm>'+escapeXml(COMPANY_NAMES_MAP[sociedad]||sociedad)+'</Nm></Dbtr>'+
+      '<Dbtr><Nm>'+escapeXml(sociedad)+'</Nm></Dbtr>'+
       '<DbtrAcct><Id><IBAN>'+debtorIBAN+'</IBAN></Id></DbtrAcct>'+
       '<DbtrAgt><FinInstnId><BIC>'+bic+'</BIC></FinInstnId></DbtrAgt>'+
       '<ChrgBr>SLEV</ChrgBr>'+txXml+
       '</PmtInf></CstmrCdtTrfInitn></Document>';
 
-    // Register remesa in Holded Tesorería → Remesas (v1)
-    let holdedRemesaId = null;
-    try {
-      const kV1 = apiKeyV1ForSoc(sociedad);
-      if (kV1) {
-        // Get treasury account ID from hardcoded map (avoids rate-limit API call)
-        const accEntry = ACCOUNTS_MAP.find(a => a.iban.replace(/[\s-]/g,'').toUpperCase() === debtorIBAN.replace(/[\s-]/g,'').toUpperCase());
-        const treasuryAccountId = accEntry ? (TREASURY_ID_MAP[accEntry.holdedName] || '') : '';
-
-        // Build remesa payload for Holded Tesorería → Remesas
-        const remesaPayload = {
-          name:      concepto,
-          concept:   concepto,
-          accountId: treasuryAccountId,
-          date:      Math.floor(execDateObj.getTime()/1000),
-          amount:    total,
-          // Each payment references the Holded invoice ID
-          payments:  transactions.map(t => ({
-            docId:   t.invoiceId,
-            amount:  t.amount,
-            concept: t.concept || ('Documento '+t.docNumber),
-          })),
-        };
-
-        console.log('Creating Holded remesa:', JSON.stringify({
-          accountId: treasuryAccountId, amount: total, payments: transactions.length
-        }));
-
-        // Try both known endpoint paths
-        for (const ep of ['/invoicing/v1/treasury/paymentorders', '/invoicing/v1/paymentorders']) {
-          try {
-            const resp = await v1Fetch('POST', ep, kV1, remesaPayload);
-            if (resp && (resp.id || resp._id)) {
-              holdedRemesaId = resp.id || resp._id;
-              console.log('Holded remesa created: id='+holdedRemesaId+' via '+ep);
-              break;
-            } else if (resp) {
-              console.log('Holded remesa response (no id):', JSON.stringify(resp).substring(0,200));
-            }
-          } catch(ep_err) {
-            console.warn('remesa endpoint '+ep+' failed:', ep_err.message);
-          }
+    // Register remesa in Holded via V1 (non-fatal)
+    let holdedRemesaId=null;
+    try{
+      const kV1=apiKeyV1ForSoc(sociedad);
+      if(kV1){
+        const treasury=await v1Get('/invoicing/v1/treasury',kV1);
+        const tAcc=(Array.isArray(treasury)?treasury:[]).find(a=>(a.iban||'').replace(/\s/g,'')===debtorIBAN.replace(/\s/g,''));
+        const payload={name:concepto,concept:concepto,accountId:tAcc?.id||'',date:Math.floor(execDateObj.getTime()/1000),amount:total,
+          payments:transactions.map(t=>({docId:t.invoiceId,amount:t.amount,concept:t.concept}))};
+        for(const ep of['/invoicing/v1/paymentorders','/invoicing/v1/treasury/paymentorders']){
+          try{const c=await v1Fetch('POST',ep,kV1,payload);if(c){holdedRemesaId=c.id||c._id;break;}}catch(e){}
         }
       }
-    } catch(e) {
-      console.warn('remesa registration failed (non-fatal):', e.message);
-    }
+    }catch(e){console.warn('remesa registration (non-fatal):',e.message);}
 
     res.json({success:true,xml,remesaId:holdedRemesaId,msgId,total,count:transactions.length,execDate,concepto,
       transactions:transactions.map(t=>({creditorName:t.creditorName,creditorIBAN:t.creditorIBAN,amount:t.amount,concept:t.concept,invoiceId:t.invoiceId,docNumber:t.docNumber||'',document_number:t.document_number||''}))});
