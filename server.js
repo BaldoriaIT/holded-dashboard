@@ -262,6 +262,20 @@ const TREASURY_ID_MAP = {
   'SUR CAIXA': '6a26e6bda9ece85c2f0fed06',
 };
 
+// Treasury cache to avoid repeated fetches (5 minute TTL)
+const _treasuryCache = {}; // { envName: { ts, data } }
+async function getV1Treasury(envName) {
+  const k = apiKeyV1(envName);
+  if (!k) return [];
+  const cached = _treasuryCache[envName];
+  const now = Date.now();
+  if (cached && (now - cached.ts) < 5*60*1000) return cached.data;
+  const data = await withRetry(() => v1Get('/invoicing/v1/treasury', k));
+  const accounts = Array.isArray(data) ? data : [];
+  _treasuryCache[envName] = { ts: now, data: accounts };
+  return accounts;
+}
+
 const SOC_API = {};
 ACCOUNTS_MAP.forEach(a => { SOC_API[a.sociedad] = a.apiKeyEnv; });
 
@@ -286,6 +300,26 @@ function ph(v){
   if(v===undefined||v===null) return 0;
   if(typeof v==='number') return v;
   return parseFloat(String(v).replace(/\./g,'').replace(',','.')) || 0;
+}
+
+// ─── Retry helper for rate-limited calls ─────────────────────────────
+async function withRetry(fn, retries=3, baseDelay=600) {
+  for (let i=0; i<retries; i++) {
+    try {
+      return await fn();
+    } catch(e) {
+      const isRetryable = e.message && (
+        e.message.includes('Premature close') ||
+        e.message.includes('429') ||
+        e.message.includes('ECONNRESET') ||
+        e.message.includes('socket hang up')
+      );
+      if (!isRetryable || i===retries-1) throw e;
+      const delay = baseDelay * Math.pow(2, i); // 600ms, 1200ms, 2400ms
+      console.log(`Retry ${i+1}/${retries} after ${delay}ms: ${e.message}`);
+      await new Promise(r=>setTimeout(r,delay));
+    }
+  }
 }
 
 // ─── V1 fetch (treasury) — header: key ───────────────────────────────
@@ -484,13 +518,13 @@ app.get('/api/balances',async(req,res)=>{
       const k=apiKeyV1(envName);
       if(!k){results.push({status:'fulfilled',value:{envName,accounts:[]}});continue;}
       try{
-        const data=await v1Get('/invoicing/v1/treasury',k);
+        const data=await getV1Treasury(envName);
         results.push({status:'fulfilled',value:{envName,accounts:Array.isArray(data)?data:[]}});
       }catch(e){
         console.error('balances',envName,e.message);
         results.push({status:'fulfilled',value:{envName,accounts:[],error:e.message}});
       }
-      await new Promise(r=>setTimeout(r,200)); // 200ms between calls
+      await new Promise(r=>setTimeout(r,500)); // 500ms between societies
     }
 
     const byName={},byIban={},allAccounts=[];
