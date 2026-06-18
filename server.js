@@ -609,7 +609,7 @@ app.get('/api/facturas',async(req,res)=>{
                 }
               }catch(e){}
             }
-            await new Promise(r=>setTimeout(r,150)); // avoid 429
+            await new Promise(r=>setTimeout(r,80)); // avoid 429
           }
         }
 
@@ -768,9 +768,42 @@ app.post('/api/create-remesa',async(req,res)=>{
     const selected=rawInvoices.filter(inv=>facturaIds.includes(inv.id||inv._id));
     if(!selected.length) return res.status(400).json({success:false,error:'No se encontraron las facturas en Holded'});
 
+    // Fetch contact IBANs from /contacts/{id} in parallel (v2 purchases don't include contact IBAN)
+    const contactIbanCache = {};
+    const uniqueContactIds = [...new Set(selected.map(inv=>inv.contact_id||inv.contactId||'').filter(Boolean))];
+    await Promise.allSettled(uniqueContactIds.map(async contactId => {
+      try {
+        const contact = await v2Get('/contacts/'+contactId, k);
+        if (contact) {
+          const iban = (contact.iban||contact.bank_iban||contact.bankIban||
+            (contact.bank_accounts&&contact.bank_accounts[0]&&contact.bank_accounts[0].iban)||'')
+            .trim().replace(/[\s-]/g,'');
+          if (iban) contactIbanCache[contactId] = iban;
+        }
+      } catch(e) { /* skip */ }
+    }));
+
+    // Validate: each invoice must have a creditor IBAN
+    const missingIBAN = selected.filter(inv => {
+      const iban = (inv.contact_iban||inv.contactIban||inv.iban||'').trim();
+      return !iban || iban.length < 15;
+    });
+    if (missingIBAN.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Faltan IBANs de proveedores en Holded. Añade el IBAN en la ficha del proveedor para: ' +
+          missingIBAN.map(inv => (inv.contact_name||inv.contactName||inv.id) + ' ('+((inv.document_number||inv.docNumber||''))+ ')').join(', '),
+        missingIBAN: missingIBAN.map(inv => ({
+          id: inv.id,
+          proveedor: inv.contact_name||inv.contactName||'',
+          docNumber: inv.document_number||inv.docNumber||'',
+        }))
+      });
+    }
+
     const transactions=selected.map(inv=>({
       creditorName:    inv.contact_name||inv.contactName||'',
-      creditorIBAN:    inv.contact_iban||inv.iban||'',
+      creditorIBAN:    contactIbanCache[inv.contact_id||inv.contactId||''] || (inv.contact_iban||inv.contactIban||inv.iban||'').trim().replace(/[\s-]/g,''),
       amount:          inv.payments_pending!==undefined?ph(inv.payments_pending):Math.max(0,ph(inv.total??inv.amount??0)-ph(inv.paid??inv.amountPaid??0)),
       concept:         'Documento '+(inv.document_number||inv.num||inv.id),
       invoiceId:       inv.id||inv._id,
@@ -790,7 +823,7 @@ app.post('/api/create-remesa',async(req,res)=>{
       '<CdtTrfTxInf><PmtId><EndToEndId>NOTPROVIDED</EndToEndId></PmtId>'+
       '<Amt><InstdAmt Ccy="EUR">'+tx.amount.toFixed(2)+'</InstdAmt></Amt>'+
       '<Cdtr><Nm>'+escapeXml(tx.creditorName)+'</Nm></Cdtr>'+
-      '<CdtrAcct><Id><IBAN>'+escapeXml(tx.creditorIBAN)+'</IBAN></Id></CdtrAcct>'+
+      '<CdtrAcct><Id><IBAN>'+(tx.creditorIBAN||'').replace(/\s/g,'')+'</IBAN></Id></CdtrAcct>'+
       '<RmtInf><Ustrd>'+escapeXml(tx.concept)+'</Ustrd></RmtInf></CdtTrfTxInf>'
     ).join('');
 
@@ -823,9 +856,9 @@ app.post('/api/create-remesa',async(req,res)=>{
           name:      concepto,
           concept:   concepto,
           accountId: treasuryAccountId,
+          bankId:    treasuryAccountId, // Holded may use bankId for Banco field
           date:      Math.floor(execDateObj.getTime()/1000),
           amount:    total,
-          // Each payment references the Holded invoice ID
           payments:  transactions.map(t => ({
             docId:   t.invoiceId,
             amount:  t.amount,
@@ -833,6 +866,7 @@ app.post('/api/create-remesa',async(req,res)=>{
           })),
         };
 
+        console.log('Creating Holded remesa payload:', JSON.stringify(remesaPayload).substring(0,500));
         console.log('Creating Holded remesa:', JSON.stringify({
           accountId: treasuryAccountId, amount: total, payments: transactions.length
         }));
@@ -845,8 +879,8 @@ app.post('/api/create-remesa',async(req,res)=>{
               holdedRemesaId = resp.id || resp._id;
               console.log('Holded remesa created: id='+holdedRemesaId+' via '+ep);
               break;
-            } else if (resp) {
-              console.log('Holded remesa response (no id):', JSON.stringify(resp).substring(0,200));
+            } else {
+              console.log('Holded remesa response (no id):', JSON.stringify(resp).substring(0,300));
             }
           } catch(ep_err) {
             console.warn('remesa endpoint '+ep+' failed:', ep_err.message);
@@ -921,56 +955,37 @@ app.post('/api/mark-paid',async(req,res)=>{
         let payOk = false;
         let lastError = '';
 
-        // Step 1: find v1 document ID by docNumber (v1 uses different IDs than v2)
-        if (!v1DocId && docNumber && kV1) {
-          try {
-            // Search v1 documents by docNumber
-            const v1docs = await v1Get(
-              '/invoicing/v1/documents?docType=purchase&docNum='+encodeURIComponent(docNumber), kV1
-            );
-            const arr = Array.isArray(v1docs) ? v1docs : (v1docs?.items || v1docs?.data || []);
-            const found = arr.find(d => (d.docNumber||d.num||'').toString() === docNumber.toString());
-            if (found) {
-              v1DocId = found.id || found._id || '';
-              console.log('v1 doc found: docNumber='+docNumber+' v1Id='+v1DocId);
-            } else {
-              console.warn('v1 doc not found for docNumber='+docNumber+', trying direct v2 ID');
-            }
-          } catch(e0) {
-            console.warn('v1 doc search failed:', e0.message);
+        // Pay via v2 POST /purchases/{id}/payments with banking_account_id
+        // (v1 doc search removed — returns HTML and adds 2-3s per invoice)
+        const v1PayId = tx.invoiceId; // use v2 ID directly
+        // Try v2 first (faster), then v1
+        try {
+          const payBodyV2 = {
+            date:    isoDate(execDateObj),
+            amount:  tx.amount,
+            concept: concepto || 'Pago remesa SEPA',
+          };
+          if (bankingAccountId) {
+            payBodyV2.banking_account_id  = bankingAccountId;
+            payBodyV2.treasury_account_id = bankingAccountId;
           }
-        }
-
-        // Step 2: pay via v1 with accountId (assigns banking account)
-        const v1PayId = v1DocId || tx.invoiceId; // fallback to v2 ID if v1 ID not found
-        if (kV1) {
-          try {
-            const payBody = {
-              date:      Math.floor(execDateObj.getTime()/1000),
-              amount:    tx.amount,
-              concept:   concepto || 'Pago remesa SEPA',
-            };
-            if (bankingAccountId) payBody.accountId = bankingAccountId;
-            await v1Fetch('POST', '/invoicing/v1/documents/'+v1PayId+'/pay', kV1, payBody);
-            payOk = true;
-            console.log('v1 pay ✅ v1DocId='+v1DocId+' account="'+accountName+'" bankId='+bankingAccountId);
-          } catch(e1) {
-            lastError = e1.message || String(e1);
-            console.warn('v1 pay failed ('+v1PayId+'):', lastError);
-            // Fallback: try v2 payment (no banking account but at least marks as paid)
+          await v2Post('/purchases/'+v1PayId+'/payments', k, payBodyV2);
+          payOk = true;
+          console.log('v2 pay ✅ invoice='+v1PayId+' bank="'+accountName+'"');
+        } catch(e1) {
+          lastError = e1.message||String(e1);
+          // Fallback v1
+          if (kV1) {
             try {
-              await v2Post('/purchases/'+tx.invoiceId+'/payments', k, {
-                date:   isoDate(execDateObj),
-                amount: tx.amount,
-                concept:concepto || 'Pago remesa SEPA',
+              await v1Fetch('POST','/invoicing/v1/documents/'+v1PayId+'/pay',kV1,{
+                date:      Math.floor(execDateObj.getTime()/1000),
+                amount:    tx.amount,
+                accountId: bankingAccountId||undefined,
+                concept:   concepto||'Pago remesa SEPA',
               });
               payOk = true;
-              lastError = 'Pagado via v2 (sin cuenta bancaria — verifique permisos API)';
-              console.log('v2 pay fallback ✅ (no banking account)');
-            } catch(e2) {
-              lastError = e2.message || String(e2);
-              console.error('all payment attempts failed:', lastError);
-            }
+              console.log('v1 pay ✅ invoice='+v1PayId);
+            } catch(e2) { lastError = e2.message||String(e2); }
           }
         }
 
@@ -1037,6 +1052,64 @@ app.get('/api/debug/test-payment', async (req, res) => {
     } catch(e) { attempts.push({field, error:e.message}); }
   }
   res.json({envName, invoiceId, bankId, attempts});
+});
+
+
+// ─── GET /api/movements ───────────────────────────────────────────────
+// Fetches positive bank movements (cobros) from treasury accounts for CF13
+// Excludes intercompany transfers (TRASPASO INTERCOMPANY, PRESTAMO INTRAGRUPO, TRASPASO DE FONDOS)
+app.get('/api/movements', async (req, res) => {
+  try {
+    const envs = [...new Set(ACCOUNTS_MAP.map(a => a.apiKeyEnv))];
+    const allMovements = [];
+    const EXCLUDE_PATTERNS = [
+      'TRASPASO INTERCOMPANY','PRESTAMO INTRAGRUPO','TRASPASO DE FONDOS',
+      'TRANSFERENCIA INTERCOMPANY','PRESTAMO INTERGRUPO','TRASPASO ENTRE SOCIEDADES',
+    ];
+
+    for (const envName of envs) {
+      const kV1 = apiKeyV1(envName);
+      if (!kV1) continue;
+      const soc = ACCOUNTS_MAP.find(a => a.apiKeyEnv === envName)?.sociedad || envName;
+
+      // Get treasury accounts for this society
+      try {
+        const treasury = await v1Get('/invoicing/v1/treasury', kV1);
+        const accounts = Array.isArray(treasury) ? treasury : [];
+
+        for (const acc of accounts) {
+          if (!acc.id) continue;
+          try {
+            // Fetch movements for this account (last 90 days)
+            const since = Math.floor((Date.now() - 90*24*60*60*1000)/1000);
+            const movs = await v1GetAll(`/invoicing/v1/treasury/${acc.id}/movements?since=${since}`, kV1, 5);
+            movs.forEach(mov => {
+              const amount = parseFloat(mov.amount || mov.value || 0);
+              if (amount <= 0) return; // only positive (cobros)
+              const concept = (mov.concept || mov.description || mov.note || '').toUpperCase();
+              // Exclude intercompany
+              if (EXCLUDE_PATTERNS.some(p => concept.includes(p))) return;
+              allMovements.push({
+                sociedad:  soc,
+                accountId: acc.id,
+                accountName: acc.name || '',
+                date:     mov.date ? isoDate(new Date(mov.date > 1e10 ? mov.date : mov.date * 1000)) : '',
+                amount,
+                concept:  mov.concept || mov.description || '',
+                type:     'income',
+              });
+            });
+          } catch(e) { /* skip account */ }
+          await new Promise(r => setTimeout(r, 80));
+        }
+      } catch(e) { /* skip society */ }
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    res.json({ success: true, count: allMovements.length, data: allMovements });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.listen(PORT,()=>console.log('✅ Servidor en puerto '+PORT+' — V1 treasury + V2 purchases'));
