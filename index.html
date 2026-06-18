@@ -636,7 +636,7 @@ const SOC_ORDER=["BALDORIA GROUP","BEATA BALDORIA","BEATA PASTA GROUP","BEATA PA
 const BANK_ORDER=['SANTANDER','SABADELL','ABANCA','BBVA','BANKINTER','CAIXA'];
 
 // ── UTILS ──
-function fmt(n,dec=2){if(n===null||n===undefined)return'—';const v=typeof n==='string'?parseFloat(n.replace(/\.(?=\d{3})/g,'').replace(',','.'))||0:Number(n);return v.toLocaleString('es-ES',{style:'currency',currency:'EUR',minimumFractionDigits:dec,maximumFractionDigits:dec})}
+function fmt(n,dec=2){if(n===null||n===undefined)return'—';return n.toLocaleString('es-ES',{style:'currency',currency:'EUR',minimumFractionDigits:dec,maximumFractionDigits:dec})}
 function fmtK(n){if(Math.abs(n)>=1000000)return(n/1000000).toFixed(1)+'M €';if(Math.abs(n)>=1000)return(n/1000).toFixed(0)+'k €';return fmt(n)}
 function ibanShort(iban){if(!iban)return'';const c=iban.replace(/\s/g,'');return c.substring(0,4)+'...'+c.slice(-4)}
 function needsDark(hex){hex=(hex||'888888').replace('#','');const r=parseInt(hex.substr(0,2),16),g=parseInt(hex.substr(2,2),16),b=parseInt(hex.substr(4,2),16);return(r*299+g*587+b*114)/1000>145}
@@ -1065,18 +1065,14 @@ function renderCF13(){
   // Add past (vencidas) to week 0
   // Separate cobros (income) from pagos (expenses)
   const expFacts = facts.filter(f=>f.type!=='income');
-  // Cobros: from sales invoices + real bank movements (excluding intercompany)
   const incFacts = facts.filter(f=>f.type==='income');
-  // Add bank movements as cobros
-  const movFacts = (socFilter==='all' ? MOVEMENTS_ALL : MOVEMENTS_ALL.filter(m=>m.sociedad===socFilter))
-    .map(m=>({...m, vencimiento:m.date, pendiente:m.amount}));
   expFacts.forEach(f=>{
     const d=new Date(f.vencimiento);const amt=f.pendiente||0;if(!amt)return;
     let placed=false;
     weeks.forEach(w=>{if(d>=w.start&&d<=w.end){w.gastos.push(amt);placed=true;}});
     if(!placed&&d<weeks[0].start) weeks[0].gastos.push(amt);
   });
-  [...incFacts, ...movFacts].forEach(f=>{
+  incFacts.forEach(f=>{
     const d=new Date(f.vencimiento);const amt=f.pendiente||0;if(!amt)return;
     let placed=false;
     weeks.forEach(w=>{if(d>=w.start&&d<=w.end){w.ingresos.push(amt);placed=true;}});
@@ -1225,15 +1221,6 @@ function renderCF13Chart(weeks) {
 let FACTURAS_ALL = [];
 let FACTURAS_FILTERED = [];
 let estadoFilter = 'all';
-
-async function loadMovements(){
-  try{
-    const res=await fetch(API_BASE+'/api/movements');
-    const json=await res.json();
-    if(json.success) MOVEMENTS_ALL=json.data||[];
-    if(currentTab==='cf13') renderCF13();
-  }catch(e){ console.warn('movements load failed:',e.message); }
-}
 
 async function loadFacturas(silent=false) {
   if (!silent) {
@@ -1588,20 +1575,7 @@ async function executeCreateSEPA() {
       body:JSON.stringify({sociedad:soc,debtorIBAN:cuenta,facturaIds:[...selectedFacturas],concepto:concep,fechaRemesa:fecha})
     });
     const json=await res.json();
-    if(!json.success) {
-      // Special handling for missing IBANs
-      if (json.missingIBAN && json.missingIBAN.length > 0) {
-        var missingList = json.missingIBAN.map(function(m){ return '<li style="margin:4px 0">'+escapeHtml(m.proveedor)+' — <span style="font-family:monospace;font-size:10px">'+escapeHtml(m.docNumber)+'</span></li>'; }).join('');
-        document.getElementById('modal-body').innerHTML =
-          '<div style="color:var(--red);font-size:13px;font-weight:600;margin-bottom:8px">❌ Faltan IBANs de proveedores</div>' +
-          '<div style="font-size:12px;color:var(--ink2);margin-bottom:8px">Para generar el XML SEPA, añade el IBAN en la ficha de cada proveedor en Holded (Contactos → Proveedor → Datos bancarios):</div>' +
-          '<ul style="font-size:12px;color:var(--ink);margin:0;padding-left:20px">'+missingList+'</ul>';
-        document.getElementById('modal-footer').innerHTML =
-          '<button class="btn btn-outline" onclick="closeModal()">Cerrar</button>';
-        return;
-      }
-      throw new Error(json.error);
-    }
+    if(!json.success) throw new Error(json.error);
 
     // Auto-download XML
     const blob=new Blob([json.xml],{type:'application/xml'});
@@ -1771,7 +1745,6 @@ document.addEventListener('DOMContentLoaded', function() {
   loadData();
   loadFacturas();
   loadRemesas();
-  loadMovements();
 });
 </script>
 </body>
